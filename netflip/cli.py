@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Sequence
 
 from netflip import __version__
@@ -35,10 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_placeholder(args: argparse.Namespace) -> int:
-    raise SystemExit(
+    print(
         "The 'run' command is planned but not implemented yet "
-        f"(received spec: {args.spec})."
+        f"(received spec: {args.spec}).",
+        file=sys.stderr,
     )
+    return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
