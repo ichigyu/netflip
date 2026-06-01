@@ -103,8 +103,10 @@ class _FakeModel:
         self.output = output if output is not None else _FakeScores()
         self.training = True
         self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self.named_parameters_calls = 0
 
     def named_parameters(self) -> list[tuple[str, _FakeParameter]]:
+        self.named_parameters_calls += 1
         return [
             ("features.weight", self.weight),
             ("features.bias", self.bias),
@@ -157,6 +159,20 @@ def fake_torch(
     return fake_module
 
 
+def test_adapter_reports_missing_pytorch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import netflip.pytorch_adapter as pytorch_adapter
+
+    def missing_import(name: str) -> Any:
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(pytorch_adapter, "_TORCH_MODULE", None)
+    monkeypatch.setattr(pytorch_adapter, "import_module", missing_import)
+
+    with pytest.raises(ModuleNotFoundError, match="requires PyTorch"):
+        PyTorchModelAdapter(_FakeModel())
+
+
 @pytest.fixture
 def torch_module() -> Any:
     return pytest.importorskip("torch")
@@ -201,6 +217,7 @@ def test_adapter_exposes_and_mutates_torch_like_weight_tensors(
     assert fake_torch.as_tensor_calls == [
         {"value": 9.0, "dtype": "fake.float32", "device": "fake:0"}
     ]
+    assert model.named_parameters_calls == 1
 
 
 def test_adapter_rejects_invalid_torch_like_model(fake_torch: _FakeTorchModule) -> None:
@@ -217,6 +234,8 @@ def test_adapter_validates_torch_like_tensor_indexes(
         adapter.read_tensor_value("features.weight", (0,))
     with pytest.raises(IndexError, match="out of bounds"):
         adapter.read_tensor_value("features.weight", (0, 2))
+    with pytest.raises(IndexError, match="out of bounds"):
+        adapter.read_tensor_value("features.weight", (-1, 0))
     with pytest.raises(TypeError, match="integers"):
         adapter.read_tensor_value("features.weight", (0, True))
     with pytest.raises(KeyError, match="unknown perturbable tensor"):
@@ -305,6 +324,8 @@ def test_adapter_validates_tensor_indexes(tiny_classifier: type[Any]) -> None:
         adapter.read_tensor_value("features.weight", (0,))
     with pytest.raises(IndexError, match="out of bounds"):
         adapter.read_tensor_value("features.weight", (0, 2))
+    with pytest.raises(IndexError, match="out of bounds"):
+        adapter.read_tensor_value("features.weight", (-1, 0))
     with pytest.raises(TypeError, match="integers"):
         adapter.read_tensor_value("features.weight", (0, True))
 

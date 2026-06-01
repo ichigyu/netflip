@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from importlib import import_module
+from numbers import Integral
 from typing import Any
 
 from netflip.model_adapter import PerturbableTensor
@@ -19,6 +20,7 @@ class PyTorchModelAdapter:
         _require_pytorch()
         _validate_pytorch_model(model)
         self._model = model
+        self._named_parameters_cache: dict[str, Any] | None = None
 
     @property
     def model(self) -> Any:
@@ -97,7 +99,9 @@ class PyTorchModelAdapter:
         return scores.argmax(dim=-1)
 
     def _named_parameters(self) -> dict[str, Any]:
-        return dict(self._model.named_parameters())
+        if self._named_parameters_cache is None:
+            self._named_parameters_cache = dict(self._model.named_parameters())
+        return self._named_parameters_cache
 
     def _parameter(self, tensor_name: str) -> Any:
         parameter = self._named_parameters().get(tensor_name)
@@ -149,14 +153,17 @@ def _validate_tensor_index(
         msg = f"tensor_index must have {len(shape)} dimensions"
         raise ValueError(msg)
 
+    normalized_index: list[int] = []
     for axis, (coordinate, dimension) in enumerate(zip(index, shape, strict=True)):
-        if isinstance(coordinate, bool) or not isinstance(coordinate, int):
+        if isinstance(coordinate, bool) or not isinstance(coordinate, Integral):
             msg = "tensor_index coordinates must be integers"
             raise TypeError(msg)
-        if coordinate < 0 or coordinate >= int(dimension):
+        normalized_coordinate = int(coordinate)
+        if normalized_coordinate < 0 or normalized_coordinate >= int(dimension):
             msg = (
-                f"tensor_index coordinate {coordinate} is out of bounds "
+                f"tensor_index coordinate {normalized_coordinate} is out of bounds "
                 f"for axis {axis} with size {int(dimension)}"
             )
             raise IndexError(msg)
-    return index
+        normalized_index.append(normalized_coordinate)
+    return tuple(normalized_index)
