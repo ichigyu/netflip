@@ -221,8 +221,16 @@ def test_adapter_exposes_and_mutates_torch_like_weight_tensors(
 
 
 def test_adapter_rejects_invalid_torch_like_model(fake_torch: _FakeTorchModule) -> None:
-    with pytest.raises(TypeError, match="missing PyTorch module attributes"):
+    class NonCallableModel:
+        named_parameters = "not-callable"
+        eval = "not-callable"
+        train = "not-callable"
+        __call__ = "not-callable"
+
+    with pytest.raises(TypeError, match="not a valid PyTorch module"):
         PyTorchModelAdapter(object())
+    with pytest.raises(TypeError, match="non-callable attributes"):
+        PyTorchModelAdapter(NonCallableModel())
 
 
 def test_adapter_validates_torch_like_tensor_indexes(
@@ -266,6 +274,13 @@ def test_classify_uses_last_dimension_for_higher_rank_outputs(
     assert scores.argmax_dim == -1
     assert predictions.shape == (2, 2)
     assert predictions.tolist() == [[1, 0], [2, 1]]
+
+
+def test_classify_rejects_outputs_without_argmax(fake_torch: _FakeTorchModule) -> None:
+    adapter = PyTorchModelAdapter(_FakeModel(output={"scores": [1, 2, 3]}))
+
+    with pytest.raises(TypeError, match="classification scores"):
+        adapter.classify("batch")
 
 
 def test_adapter_can_wrap_a_small_pytorch_module(tiny_classifier: type[Any]) -> None:

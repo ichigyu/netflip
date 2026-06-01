@@ -94,9 +94,13 @@ class PyTorchModelAdapter:
             return self._model(*args, **kwargs)
 
     def classify(self, *args: Any, **kwargs: Any) -> Any:
-        """Return class predictions from model scores using the last dimension."""
+        """Return class predictions from tensor-like model scores."""
         scores = self.inference(*args, **kwargs)
-        return scores.argmax(dim=-1)
+        argmax = getattr(scores, "argmax", None)
+        if not callable(argmax):
+            msg = "classification scores must provide a callable argmax(dim=...) method"
+            raise TypeError(msg)
+        return argmax(dim=-1)
 
     def _named_parameters(self) -> dict[str, Any]:
         if self._named_parameters_cache is None:
@@ -125,12 +129,24 @@ def _require_pytorch() -> Any:
 
 
 def _validate_pytorch_model(model: Any) -> None:
-    required_attributes = ("named_parameters", "eval", "train", "__call__")
-    missing = [
-        attribute for attribute in required_attributes if not hasattr(model, attribute)
-    ]
-    if missing:
-        msg = f"model is missing PyTorch module attributes: {', '.join(missing)}"
+    required_callables = ("named_parameters", "eval", "train", "__call__")
+    missing: list[str] = []
+    non_callable: list[str] = []
+
+    for attribute in required_callables:
+        value = getattr(model, attribute, None)
+        if value is None:
+            missing.append(attribute)
+        elif not callable(value):
+            non_callable.append(attribute)
+
+    if missing or non_callable:
+        problems: list[str] = []
+        if missing:
+            problems.append(f"missing attributes: {', '.join(missing)}")
+        if non_callable:
+            problems.append(f"non-callable attributes: {', '.join(non_callable)}")
+        msg = f"model is not a valid PyTorch module ({'; '.join(problems)})"
         raise TypeError(msg)
 
 
