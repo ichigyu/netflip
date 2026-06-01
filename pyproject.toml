@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Neural-network bit-flip reliability evaluation framework."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
   { name = "NetFlip contributors" },
 ]
@@ -30,17 +30,15 @@ classifiers = [
 ]
 dependencies = []
 
-[project.optional-dependencies]
-dev = [
-  "pytest>=8",
-  "ruff>=0.4",
-]
-
 [project.scripts]
 netflip = "netflip.cli:main"
 
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8,<9"
+ruff = ">=0.4,<1"
+
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["netflip*"]
 
 [tool.pytest.ini_options]
