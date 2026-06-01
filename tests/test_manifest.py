@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
 from beartype.roar import BeartypeCallHintParamViolation
 from pydantic import ValidationError
 
-from netflip.manifest import RunManifest, build_run_manifest
+from netflip.manifest import RunManifest, build_run_manifest, write_run_manifest
 
 
 def manifest_kwargs() -> dict[str, Any]:
@@ -54,3 +56,35 @@ def test_build_run_manifest_rejects_wrong_boundary_types() -> None:
 
     with pytest.raises(BeartypeCallHintParamViolation):
         build_run_manifest(**kwargs)
+
+
+def test_write_run_manifest_emits_manifest_json(tmp_path: Path) -> None:
+    manifest = build_run_manifest(**manifest_kwargs())
+
+    manifest_path = write_run_manifest(manifest, tmp_path)
+
+    assert manifest_path == tmp_path / "manifest.json"
+    written = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert set(written) == {
+        "created_at",
+        "dependencies",
+        "device",
+        "evaluation_dataset_checksum",
+        "evaluation_dataset_id",
+        "experiment_spec_hash",
+        "git_commit",
+        "model_artifact_id",
+        "model_checkpoint_checksum",
+        "model_checkpoint_path",
+        "netflip_version",
+        "output_schema_version",
+        "quantization_metadata",
+        "rng_seeds",
+        "run_id",
+        "selection_dataset_checksum",
+        "selection_dataset_id",
+    }
+    assert written["run_id"] == "run-001"
+    assert written["git_commit"] == "abc1234"
+    assert written["output_schema_version"] == "2026.1"
+    assert written["created_at"] == "2026-01-01T00:00:00Z"
