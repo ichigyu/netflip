@@ -38,3 +38,25 @@ Default checks:
 poetry run pytest
 poetry run ruff check .
 ```
+
+Coverage report:
+
+```bash
+poetry run coverage run -m pytest
+poetry run coverage report
+```
+
+Run the automated test workflow:
+
+```bash
+poetry run nox
+```
+
+The Nox workflow runs pytest, coverage, and Ruff linting. It is configured to
+skip unavailable Python interpreters so contributors can still run the default
+checks on the local Python 3.11 development environment.
+
+`pytest-mock` is not part of the development dependencies yet. The current test
+suite uses pytest fixtures and Click's `CliRunner` directly, and there is no
+shared mock-heavy test setup that needs the plugin. Prefer adding `pytest-mock`
+only when a concrete mocking use case appears.

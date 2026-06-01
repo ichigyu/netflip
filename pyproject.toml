@@ -37,6 +37,8 @@ netflip = "netflip.console:main"
 
 [dependency-groups]
 dev = [
+  "coverage[toml]>=7,<8",
+  "nox>=2025.5.1,<2027",
   "pytest>=8,<9",
   "ruff>=0.4,<1",
 ]
@@ -47,6 +49,22 @@ include = ["netflip*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["netflip"]
+omit = [
+  ".nox/*",
+  "tests/*",
+]
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+show_missing = true
+skip_covered = true
 
 [tool.ruff]
 line-length = 88
