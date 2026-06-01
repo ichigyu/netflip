@@ -11,9 +11,10 @@ The first usable release focuses on CIFAR-10 classification with a ResNet-20 ben
 Recommended local workflow:
 
 ```bash
-conda create -n netflip python=3.11
-conda activate netflip
-pip install -e ".[dev]"
+pyenv install 3.11
+pyenv local 3.11
+poetry config virtualenvs.in-project true
+poetry install --with dev
 ```
 
 ## Run
@@ -21,7 +22,7 @@ pip install -e ".[dev]"
 Current CLI:
 
 ```bash
-netflip --version
+poetry run netflip --version
 ```
 
 The experiment runner is planned for a later MVP work item.
@@ -31,6 +32,6 @@ The experiment runner is planned for a later MVP work item.
 Default checks:
 
 ```bash
-pytest
-ruff check .
+poetry run pytest
+poetry run ruff check .
 ```
