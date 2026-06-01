@@ -20,6 +20,8 @@ from netflip.manifest import (
     build_run_manifest,
     write_run_manifest,
 )
+from netflip.model_adapter import ModelAdapter, PerturbableTensor
+from netflip.pytorch_adapter import PyTorchModelAdapter
 from netflip.trace import (
     CANDIDATE_TRACE_FILENAME,
     PERTURBATION_TRACE_FILENAME,
@@ -46,7 +48,10 @@ __all__ = [
     "UINT8_MAX",
     "BitMetadata",
     "BitRole",
+    "ModelAdapter",
+    "PerturbableTensor",
     "PerturbationTraceEntry",
+    "PyTorchModelAdapter",
     "RunManifest",
     "SignedInt8TwoComplementCodec",
     "__version__",
