@@ -13,6 +13,7 @@ from netflip.int8_codec import (
     BitRole,
     SignedInt8TwoComplementCodec,
 )
+from netflip.manifest import RunManifest, build_run_manifest
 
 try:
     __version__ = version("netflip")
@@ -28,6 +29,8 @@ __all__ = [
     "UINT8_MAX",
     "BitMetadata",
     "BitRole",
+    "RunManifest",
     "SignedInt8TwoComplementCodec",
     "__version__",
+    "build_run_manifest",
 ]

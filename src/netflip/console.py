@@ -24,6 +24,5 @@ def main(ctx: click.Context) -> None:
 def run(spec: str) -> None:
     """Run an experiment spec."""
     raise click.ClickException(
-        "The 'run' command is planned but not implemented yet "
-        f"(received spec: {spec})."
+        f"The 'run' command is planned but not implemented yet (received spec: {spec})."
     )
