@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import nox
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 compatibility
+    import tomli as tomllib
 
 nox.options.default_venv_backend = "venv"
 nox.options.error_on_missing_interpreters = False
@@ -16,15 +20,20 @@ DEV_DEPENDENCIES = tomllib.loads(Path("pyproject.toml").read_text())[
 
 
 def dev_dependency(name: str) -> str:
-    return next(
-        dependency
-        for dependency in DEV_DEPENDENCIES
-        if dependency == name
-        or dependency.startswith(f"{name}>")
-        or dependency.startswith(f"{name}<")
-        or dependency.startswith(f"{name}=")
-        or dependency.startswith(f"{name}[")
-    )
+    try:
+        return next(
+            dependency
+            for dependency in DEV_DEPENDENCIES
+            if dependency == name
+            or dependency.startswith(f"{name}>")
+            or dependency.startswith(f"{name}<")
+            or dependency.startswith(f"{name}=")
+            or dependency.startswith(f"{name}[")
+        )
+    except StopIteration as exc:
+        raise RuntimeError(
+            f"Requested dev dependency {name!r} was not found in pyproject.toml"
+        ) from exc
 
 
 @nox.session(python=PYTHON_VERSIONS)
