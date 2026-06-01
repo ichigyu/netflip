@@ -49,7 +49,6 @@ dev = [
   "ruff>=0.13,<1",
   "sphinx>=7.4,<9",
   "tomli>=2,<3",
-  "twine>=6,<7",
   "xdoctest>=1.2,<2",
 ]
 test = [
@@ -63,9 +62,8 @@ typing = [
 docs = [
   "sphinx>=7.4,<9",
 ]
-release = [
+build = [
   "build>=1.2,<2",
-  "twine>=6,<7",
 ]
 
 [tool.setuptools.packages.find]

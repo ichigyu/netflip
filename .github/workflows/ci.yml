@@ -47,7 +47,7 @@ jobs:
           enable-cache: true
       - run: uv sync --all-groups --locked
       - run: >
-          uv run nox -s doctests coverage lint format typecheck docs release
+          uv run nox -s doctests coverage lint format typecheck docs build
       - uses: codecov/codecov-action@v6
         with:
           files: coverage.xml

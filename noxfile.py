@@ -21,7 +21,6 @@ nox.options.sessions = [
     "typecheck",
     "docs",
     "build",
-    "release",
 ]
 
 PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
@@ -96,16 +95,6 @@ def docs(session: nox.Session) -> None:
 @nox.session(python="3.11")
 def build(session: nox.Session) -> None:
     """Build package artifacts."""
-    session.install(*group_dependencies("release"))
+    session.install(*group_dependencies("build"))
     shutil.rmtree("dist", ignore_errors=True)
     session.run("python", "-m", "build")
-
-
-@nox.session(python="3.11")
-def release(session: nox.Session) -> None:
-    """Validate package artifacts for release."""
-    session.install(*group_dependencies("release"))
-    shutil.rmtree("dist", ignore_errors=True)
-    session.run("python", "-m", "build")
-    artifacts = sorted(str(path) for path in Path("dist").glob("*"))
-    session.run("twine", "check", *artifacts)

@@ -49,12 +49,11 @@ uv run coverage xml
 uv run coverage report
 ```
 
-Build documentation and release artifacts:
+Build documentation and package artifacts:
 
 ```bash
 uv run sphinx-build -W -b html docs docs/_build/html
 uv run python -m build
-uv run twine check dist/*
 ```
 
 Run the complete automated workflow:
@@ -64,10 +63,9 @@ uv run nox
 ```
 
 The Nox workflow runs pytest, xdoctest, coverage, Ruff lint and format checks,
-Pyright, Sphinx documentation builds, package builds, and release artifact
-validation. It is configured to skip unavailable Python interpreters so
-contributors can still run the default checks on their local development
-environment.
+Pyright, Sphinx documentation builds, and package builds. It is configured to
+skip unavailable Python interpreters so contributors can still run the default
+checks on their local development environment.
 
 `pytest-mock` is not part of the development dependencies yet. The current test
 suite uses pytest fixtures and Click's `CliRunner` directly, and there is no

@@ -28,7 +28,7 @@ Run executable examples:
 
    uv run pytest --xdoctest src/netflip
 
-Run lint, format, type, docs, and release checks:
+Run lint, format, type, docs, and package build checks:
 
 .. code-block:: bash
 
@@ -37,7 +37,6 @@ Run lint, format, type, docs, and release checks:
    uv run pyright
    uv run sphinx-build -W -b html docs docs/_build/html
    uv run python -m build
-   uv run twine check dist/*
 
 Run the complete Nox workflow:
 
