@@ -30,17 +30,9 @@ classifiers = [
 ]
 dependencies = []
 
-[project.optional-dependencies]
-dev = [
-  "pytest>=8,<9",
-  "ruff>=0.4,<1",
-]
-
 [project.scripts]
 netflip = "netflip.cli:main"
 
-# Keep these in sync with project.optional-dependencies.dev so Poetry and
-# pip-based development workflows resolve the same tool constraints.
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8,<9"
 ruff = ">=0.4,<1"
