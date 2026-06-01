@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from importlib import import_module
 from typing import Any
 
 from netflip.model_adapter import PerturbableTensor
+
+_TORCH_MODULE: Any | None = None
 
 
 class PyTorchModelAdapter:
@@ -61,18 +63,27 @@ class PyTorchModelAdapter:
         torch = _require_pytorch()
         parameter = self._parameter(tensor_name)
         index = _validate_tensor_index(tensor_index, parameter.shape)
+        tensor_value = torch.as_tensor(
+            value,
+            dtype=parameter.dtype,
+            device=parameter.device,
+        )
         with torch.no_grad():
-            parameter[index] = value
+            parameter[index] = tensor_value
 
-    @contextmanager
-    def evaluation_mode(self) -> Iterator[None]:
+    def evaluation_mode(self) -> AbstractContextManager[None]:
         """Temporarily put the model in evaluation mode and restore training state."""
-        was_training = bool(self._model.training)
-        self._model.eval()
-        try:
-            yield
-        finally:
-            self._model.train(was_training)
+
+        @contextmanager
+        def evaluation_context() -> Iterator[None]:
+            was_training = bool(self._model.training)
+            self._model.eval()
+            try:
+                yield
+            finally:
+                self._model.train(was_training)
+
+        return evaluation_context()
 
     def inference(self, *args: Any, **kwargs: Any) -> Any:
         """Evaluate the wrapped model in evaluation mode without gradients."""
@@ -97,11 +108,16 @@ class PyTorchModelAdapter:
 
 
 def _require_pytorch() -> Any:
+    global _TORCH_MODULE
+    if _TORCH_MODULE is not None:
+        return _TORCH_MODULE
+
     try:
-        return import_module("torch")
+        _TORCH_MODULE = import_module("torch")
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on environment
         msg = "PyTorchModelAdapter requires PyTorch to be installed"
         raise ModuleNotFoundError(msg) from exc
+    return _TORCH_MODULE
 
 
 def _validate_pytorch_model(model: Any) -> None:
