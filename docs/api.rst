@@ -10,5 +10,11 @@ API Reference
 .. automodule:: netflip.manifest
    :members:
 
+.. automodule:: netflip.model_adapter
+   :members:
+
+.. automodule:: netflip.pytorch_adapter
+   :members:
+
 .. automodule:: netflip.trace
    :members:
