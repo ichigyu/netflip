@@ -9,3 +9,6 @@ API Reference
 
 .. automodule:: netflip.manifest
    :members:
+
+.. automodule:: netflip.trace
+   :members:

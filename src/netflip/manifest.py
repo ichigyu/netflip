@@ -29,11 +29,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from os import PathLike
+from pathlib import Path
 
 from beartype import beartype
 from pydantic import BaseModel, ConfigDict, Field
 
 JSONScalar = str | int | float | bool | None
+RUN_MANIFEST_FILENAME = "manifest.json"
+OUTPUT_SCHEMA_VERSION = "2026.1"
 
 
 class RunManifest(BaseModel):
@@ -101,3 +105,15 @@ def build_run_manifest(
         dependencies=dict(dependencies),
         output_schema_version=output_schema_version,
     )
+
+
+@beartype
+def write_run_manifest(manifest: RunManifest, output_dir: str | PathLike[str]) -> Path:
+    """Write ``manifest.json`` in a run output directory."""
+    manifest_path = Path(output_dir) / RUN_MANIFEST_FILENAME
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        f"{manifest.model_dump_json(indent=2)}\n",
+        encoding="utf-8",
+    )
+    return manifest_path
