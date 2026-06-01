@@ -30,6 +30,12 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.4",
+]
+
 [project.scripts]
 netflip = "netflip.cli:main"
 

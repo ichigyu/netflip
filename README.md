@@ -17,6 +17,9 @@ poetry config virtualenvs.in-project true
 poetry install --with dev
 ```
 
+NetFlip supports Python 3.10 and newer. The local development workflow pins
+Python 3.11 as the recommended version for contributors.
+
 ## Run
 
 Current CLI:
