@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from math import inf, nan
+
 import pytest
 
 from netflip import SignedInt8TwoComplementCodec
-from netflip.int8_codec import INT8_MAX, INT8_MIN
+from netflip.int8_codec import INT8_MAX, INT8_MIN, BitRole
 
 
 @pytest.mark.parametrize(
@@ -32,6 +34,32 @@ def test_quantize_and_dequantize_use_per_tensor_scale() -> None:
 
     assert codec.quantize(1.0) == 4
     assert codec.dequantize(-6) == -1.5
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0.125, 1),
+        (-0.125, -1),
+        (1e6, INT8_MAX),
+        (-1e6, INT8_MIN),
+    ],
+)
+def test_quantize_uses_half_away_from_zero_rounding_and_clamps(
+    value: float,
+    expected: int,
+) -> None:
+    codec = SignedInt8TwoComplementCodec(scale=0.25)
+
+    assert codec.quantize(value) == expected
+
+
+@pytest.mark.parametrize("value", [nan, inf, -inf])
+def test_quantize_rejects_non_finite_values(value: float) -> None:
+    codec = SignedInt8TwoComplementCodec()
+
+    with pytest.raises(ValueError, match="finite"):
+        codec.quantize(value)
 
 
 @pytest.mark.parametrize(
@@ -79,12 +107,13 @@ def test_bit_metadata_marks_lsb_msb_and_sign_positions(
     is_sign_bit: bool,
 ) -> None:
     codec = SignedInt8TwoComplementCodec()
+    expected_role: BitRole = role
 
     metadata = codec.bit_metadata(bit_index)
 
     assert metadata.bit_index == bit_index
     assert metadata.mask == mask
-    assert metadata.role == role
+    assert metadata.role == expected_role
     assert metadata.is_lsb is is_lsb
     assert metadata.is_msb is is_msb
     assert metadata.is_sign_bit is is_sign_bit
@@ -98,12 +127,36 @@ def test_encode_rejects_values_outside_signed_int8_range(value: int) -> None:
         codec.encode(value)
 
 
+@pytest.mark.parametrize("value", [True, False, 1.0, "1"])
+def test_encode_rejects_non_integer_inputs(value: object) -> None:
+    codec = SignedInt8TwoComplementCodec()
+
+    with pytest.raises(TypeError, match="value must be an integer"):
+        codec.encode(value)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("encoded", [-1, 256])
 def test_decode_rejects_values_outside_byte_range(encoded: int) -> None:
     codec = SignedInt8TwoComplementCodec()
 
     with pytest.raises(ValueError, match="byte range"):
         codec.decode(encoded)
+
+
+@pytest.mark.parametrize("encoded", [True, False, 1.0, "1"])
+def test_decode_rejects_non_integer_inputs(encoded: object) -> None:
+    codec = SignedInt8TwoComplementCodec()
+
+    with pytest.raises(TypeError, match="encoded value must be an integer"):
+        codec.decode(encoded)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [True, False, 1.0, "1"])
+def test_dequantize_rejects_non_integer_inputs(value: object) -> None:
+    codec = SignedInt8TwoComplementCodec()
+
+    with pytest.raises(TypeError, match="value must be an integer"):
+        codec.dequantize(value)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("bit_index", [-1, 8])
@@ -114,6 +167,7 @@ def test_bit_metadata_rejects_invalid_bit_indexes(bit_index: int) -> None:
         codec.bit_metadata(bit_index)
 
 
-def test_scale_must_be_positive_and_finite() -> None:
+@pytest.mark.parametrize("scale", [0, -1.0, nan, inf])
+def test_scale_must_be_positive_and_finite(scale: float) -> None:
     with pytest.raises(ValueError, match="scale"):
-        SignedInt8TwoComplementCodec(scale=0)
+        SignedInt8TwoComplementCodec(scale=scale)

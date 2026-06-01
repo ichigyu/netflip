@@ -8,6 +8,7 @@ from netflip.int8_codec import (
     INT8_MIN,
     UINT8_MAX,
     BitMetadata,
+    BitRole,
     SignedInt8TwoComplementCodec,
 )
 
@@ -22,6 +23,7 @@ __all__ = [
     "INT8_MIN",
     "UINT8_MAX",
     "BitMetadata",
+    "BitRole",
     "SignedInt8TwoComplementCodec",
     "__version__",
 ]
