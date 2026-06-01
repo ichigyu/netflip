@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -33,9 +33,11 @@ dependencies = []
 [project.scripts]
 netflip = "netflip.cli:main"
 
-[tool.poetry.group.dev.dependencies]
-pytest = ">=8,<9"
-ruff = ">=0.4,<1"
+[dependency-groups]
+dev = [
+  "pytest>=8,<9",
+  "ruff>=0.4,<1",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
