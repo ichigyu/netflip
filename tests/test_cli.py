@@ -30,4 +30,4 @@ def test_cli_run_placeholder_returns_nonzero() -> None:
     result = runner.invoke(main, ["run", "spec.yaml"])
 
     assert result.exit_code == 1
-    assert "received spec: spec.yaml" in result.output
+    assert "received spec: spec.yaml" in result.stderr
