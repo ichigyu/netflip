@@ -26,10 +26,14 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+  "beartype>=0.20,<1",
   "click>=8.1,<9.0",
+  "pydantic>=2.11,<3",
 ]
 
 [project.scripts]
@@ -37,10 +41,29 @@ netflip = "netflip.console:main"
 
 [dependency-groups]
 dev = [
+  "build>=1.2,<2",
   "coverage[toml]>=7,<8",
   "nox>=2025.5.1,<2027",
+  "pyright>=1.1,<2",
   "pytest>=8,<9",
-  "ruff>=0.4,<1",
+  "ruff>=0.13,<1",
+  "sphinx>=7.4,<9",
+  "tomli>=2,<3",
+  "xdoctest>=1.2,<2",
+]
+test = [
+  "coverage[toml]>=7,<8",
+  "pytest>=8,<9",
+  "xdoctest>=1.2,<2",
+]
+typing = [
+  "pyright>=1.1,<2",
+]
+docs = [
+  "sphinx>=7.4,<9",
+]
+build = [
+  "build>=1.2,<2",
 ]
 
 [tool.setuptools.packages.find]
@@ -49,6 +72,8 @@ include = ["netflip*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--strict-markers"]
+xdoctest_encoding = "utf-8"
 
 [tool.coverage.run]
 branch = true
@@ -66,9 +91,21 @@ exclude_also = [
 show_missing = true
 skip_covered = true
 
+[tool.coverage.xml]
+output = "coverage.xml"
+
 [tool.ruff]
 line-length = 88
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "RUF"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = "none"
+
+[tool.uv]
+required-version = ">=0.9.0"
