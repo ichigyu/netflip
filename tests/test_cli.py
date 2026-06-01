@@ -24,6 +24,16 @@ def test_cli_without_args_prints_help() -> None:
     assert "Neural-network bit-flip reliability" in result.output
 
 
+def test_cli_help_options_print_help() -> None:
+    runner = CliRunner()
+
+    for help_option in ("-h", "--help"):
+        result = runner.invoke(main, [help_option])
+
+        assert result.exit_code == 0
+        assert "Neural-network bit-flip reliability" in result.output
+
+
 def test_cli_run_placeholder_returns_nonzero() -> None:
     runner = CliRunner()
 
@@ -31,3 +41,12 @@ def test_cli_run_placeholder_returns_nonzero() -> None:
 
     assert result.exit_code == 1
     assert "received spec: spec.yaml" in result.stderr
+
+
+def test_cli_run_requires_spec_argument() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["run"])
+
+    assert result.exit_code != 0
+    assert "Missing argument 'SPEC'" in result.stderr

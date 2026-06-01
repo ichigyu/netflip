@@ -23,9 +23,7 @@ def main(ctx: click.Context) -> None:
 @click.argument("spec")
 def run(spec: str) -> None:
     """Run an experiment spec."""
-    click.echo(
+    raise click.ClickException(
         "The 'run' command is planned but not implemented yet "
-        f"(received spec: {spec}).",
-        err=True,
+        f"(received spec: {spec})."
     )
-    raise click.exceptions.Exit(1)
