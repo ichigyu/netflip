@@ -13,7 +13,7 @@ Recommended local workflow:
 ```bash
 pyenv install 3.11
 pyenv local 3.11
-poetry config virtualenvs.in-project true
+poetry config virtualenvs.in-project true --local
 poetry install --with dev
 ```
 
