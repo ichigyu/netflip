@@ -46,7 +46,7 @@ pytest = ">=8,<9"
 ruff = ">=0.4,<1"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["netflip*"]
 
 [tool.pytest.ini_options]
