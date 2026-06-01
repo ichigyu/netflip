@@ -1,26 +1,33 @@
 from __future__ import annotations
 
-import pytest
+from click.testing import CliRunner
 
 from netflip import __version__
-from netflip.cli import main
+from netflip.console import main
 
 
-def test_cli_version(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc_info:
-        main(["--version"])
+def test_cli_version() -> None:
+    runner = CliRunner()
 
-    assert exc_info.value.code == 0
-    assert f"netflip {__version__}" in capsys.readouterr().out
+    result = runner.invoke(main, ["--version"])
 
-
-def test_cli_without_args_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main([]) == 0
-    assert "Neural-network bit-flip reliability" in capsys.readouterr().out
+    assert result.exit_code == 0
+    assert f"netflip, version {__version__}" in result.output
 
 
-def test_cli_run_placeholder_returns_nonzero(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert main(["run", "spec.yaml"]) == 1
-    assert "received spec: spec.yaml" in capsys.readouterr().err
+def test_cli_without_args_prints_help() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(main, [])
+
+    assert result.exit_code == 0
+    assert "Neural-network bit-flip reliability" in result.output
+
+
+def test_cli_run_placeholder_returns_nonzero() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["run", "spec.yaml"])
+
+    assert result.exit_code == 1
+    assert "received spec: spec.yaml" in result.output

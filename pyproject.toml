@@ -28,10 +28,12 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = []
+dependencies = [
+  "click>=8.1",
+]
 
 [project.scripts]
-netflip = "netflip.cli:main"
+netflip = "netflip.console:main"
 
 [dependency-groups]
 dev = [
