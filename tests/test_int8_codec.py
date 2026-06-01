@@ -5,7 +5,13 @@ from math import inf, nan
 import pytest
 
 from netflip import SignedInt8TwoComplementCodec
-from netflip.int8_codec import INT8_MAX, INT8_MIN, BitRole
+from netflip.int8_codec import (
+    INT8_MAX,
+    INT8_MIN,
+    INT8_MODULUS,
+    INT8_SIGN_BIT_MASK,
+    BitRole,
+)
 
 
 @pytest.mark.parametrize(
@@ -93,30 +99,36 @@ def test_flip_bit_returns_encoded_byte() -> None:
 @pytest.mark.parametrize(
     ("bit_index", "mask", "role", "is_lsb", "is_msb", "is_sign_bit"),
     [
-        (0, 0b0000_0001, "lsb", True, False, False),
-        (3, 0b0000_1000, "value", False, False, False),
-        (7, 0b1000_0000, "sign_msb", False, True, True),
+        (0, 0b0000_0001, BitRole.LSB, True, False, False),
+        (3, 0b0000_1000, BitRole.VALUE, False, False, False),
+        (7, INT8_SIGN_BIT_MASK, BitRole.SIGN_MSB, False, True, True),
     ],
 )
 def test_bit_metadata_marks_lsb_msb_and_sign_positions(
     bit_index: int,
     mask: int,
-    role: str,
+    role: BitRole,
     is_lsb: bool,
     is_msb: bool,
     is_sign_bit: bool,
 ) -> None:
     codec = SignedInt8TwoComplementCodec()
-    expected_role: BitRole = role
 
     metadata = codec.bit_metadata(bit_index)
 
     assert metadata.bit_index == bit_index
     assert metadata.mask == mask
-    assert metadata.role == expected_role
+    assert metadata.role is role
+    assert metadata.role.value == role.value
     assert metadata.is_lsb is is_lsb
     assert metadata.is_msb is is_msb
     assert metadata.is_sign_bit is is_sign_bit
+
+
+def test_decode_uses_int8_width_derived_sign_constants() -> None:
+    codec = SignedInt8TwoComplementCodec()
+
+    assert codec.decode(INT8_SIGN_BIT_MASK) == INT8_SIGN_BIT_MASK - INT8_MODULUS
 
 
 @pytest.mark.parametrize("value", [INT8_MIN - 1, INT8_MAX + 1])

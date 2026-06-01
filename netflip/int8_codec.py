@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from math import copysign, floor, isfinite
-from typing import Literal
 
 INT8_BIT_WIDTH = 8
 INT8_MIN = -128
 INT8_MAX = 127
 UINT8_MAX = 255
-BitRole = Literal["lsb", "value", "sign_msb"]
+INT8_SIGN_BIT_MASK = 1 << (INT8_BIT_WIDTH - 1)
+INT8_MODULUS = UINT8_MAX + 1
+
+
+class BitRole(str, Enum):
+    """Semantic roles for int8 bit positions."""
+
+    LSB = "lsb"
+    VALUE = "value"
+    SIGN_MSB = "sign_msb"
 
 
 @dataclass(frozen=True)
@@ -31,11 +40,11 @@ def _build_bit_metadata(bit_index: int) -> BitMetadata:
     is_sign_bit = is_msb
 
     if is_sign_bit:
-        role: BitRole = "sign_msb"
+        role = BitRole.SIGN_MSB
     elif is_lsb:
-        role = "lsb"
+        role = BitRole.LSB
     else:
-        role = "value"
+        role = BitRole.VALUE
 
     return BitMetadata(
         bit_index=bit_index,
@@ -71,8 +80,8 @@ class SignedInt8TwoComplementCodec:
     def decode(self, encoded: int) -> int:
         """Decode an unsigned two's-complement byte as a signed int8 value."""
         byte = _validate_uint8(encoded)
-        if byte & 0b1000_0000:
-            return byte - 0b1_0000_0000
+        if byte & INT8_SIGN_BIT_MASK:
+            return byte - INT8_MODULUS
         return byte
 
     def quantize(self, value: float) -> int:
