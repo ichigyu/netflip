@@ -61,7 +61,7 @@ omit = [
 [tool.coverage.report]
 exclude_also = [
   "if TYPE_CHECKING:",
-  "if __name__ == .__main__.:",
+  "if __name__ == \"__main__\":",
 ]
 show_missing = true
 skip_covered = true
