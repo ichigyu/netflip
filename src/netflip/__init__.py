@@ -2,6 +2,13 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from netflip.benchmarks import (
+    CifarResNet20QuantizedArtifact,
+    PerTensorScale,
+    PerTensorScaleMetadata,
+    load_cifar_resnet20_quantized_artifact,
+    load_per_tensor_scale_metadata,
+)
 from netflip.experiment_spec import (
     EXPERIMENT_SPEC_SCHEMA_VERSION,
     BenchmarkModelSpec,
@@ -93,6 +100,7 @@ __all__ = [
     "BitMetadata",
     "BitRole",
     "CheckpointSpec",
+    "CifarResNet20QuantizedArtifact",
     "DatasetSpec",
     "EligibleBitPopulation",
     "ExperimentSpec",
@@ -101,6 +109,8 @@ __all__ = [
     "FaultBudgetSpec",
     "MetricEvaluator",
     "ModelAdapter",
+    "PerTensorScale",
+    "PerTensorScaleMetadata",
     "PerturbableTensor",
     "PerturbationTraceEntry",
     "PyTorchModelAdapter",
@@ -116,7 +126,9 @@ __all__ = [
     "__version__",
     "build_run_manifest",
     "candidate_trace_path",
+    "load_cifar_resnet20_quantized_artifact",
     "load_experiment_spec",
+    "load_per_tensor_scale_metadata",
     "parse_experiment_spec",
     "resolve_torch_device",
     "run_uniform_random_soft_error_baseline",

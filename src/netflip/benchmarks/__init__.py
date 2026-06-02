@@ -8,6 +8,9 @@ from netflip.benchmarks.cifar_resnet20 import (
     Cifar10DataLoaders,
     Cifar10DatasetRequest,
     Cifar10DatasetRole,
+    CifarResNet20QuantizedArtifact,
+    PerTensorScale,
+    PerTensorScaleMetadata,
     ResNet20Config,
     build_cifar10_dataloader,
     build_cifar10_dataloaders,
@@ -17,6 +20,8 @@ from netflip.benchmarks.cifar_resnet20 import (
     compute_cross_entropy_loss,
     compute_top1_accuracy,
     evaluate_classification_metrics,
+    load_cifar_resnet20_quantized_artifact,
+    load_per_tensor_scale_metadata,
 )
 
 __all__ = [
@@ -27,6 +32,9 @@ __all__ = [
     "Cifar10DataLoaders",
     "Cifar10DatasetRequest",
     "Cifar10DatasetRole",
+    "CifarResNet20QuantizedArtifact",
+    "PerTensorScale",
+    "PerTensorScaleMetadata",
     "ResNet20Config",
     "build_cifar10_dataloader",
     "build_cifar10_dataloaders",
@@ -36,4 +44,6 @@ __all__ = [
     "compute_cross_entropy_loss",
     "compute_top1_accuracy",
     "evaluate_classification_metrics",
+    "load_cifar_resnet20_quantized_artifact",
+    "load_per_tensor_scale_metadata",
 ]
