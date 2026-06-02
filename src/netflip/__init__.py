@@ -2,6 +2,19 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from netflip.experiment_spec import (
+    EXPERIMENT_SPEC_SCHEMA_VERSION,
+    BenchmarkModelSpec,
+    BfaPbsScenarioSpec,
+    CheckpointSpec,
+    DatasetSpec,
+    ExperimentSpec,
+    FaultBudgetSpec,
+    QuantizationSpec,
+    RandomSoftErrorScenarioSpec,
+    load_experiment_spec,
+    parse_experiment_spec,
+)
 from netflip.int8_codec import (
     INT8_BIT_WIDTH,
     INT8_MAX,
@@ -53,6 +66,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "CANDIDATE_TRACE_FILENAME",
+    "EXPERIMENT_SPEC_SCHEMA_VERSION",
     "FAILURE_CRITERION_STOP_REASON",
     "FAULT_BUDGET_STOP_REASON",
     "INT8_BIT_WIDTH",
@@ -68,16 +82,24 @@ __all__ = [
     "SOFT_ERROR_SCENARIO_TYPE",
     "UINT8_MAX",
     "UNIFORM_ELIGIBLE_BIT_STRATEGY_NAME",
+    "BenchmarkModelSpec",
+    "BfaPbsScenarioSpec",
     "BitMetadata",
     "BitRole",
+    "CheckpointSpec",
+    "DatasetSpec",
     "EligibleBitPopulation",
+    "ExperimentSpec",
     "FailureCriterion",
     "FaultBudget",
+    "FaultBudgetSpec",
     "MetricEvaluator",
     "ModelAdapter",
     "PerturbableTensor",
     "PerturbationTraceEntry",
     "PyTorchModelAdapter",
+    "QuantizationSpec",
+    "RandomSoftErrorScenarioSpec",
     "RunManifest",
     "SignedInt8TwoComplementCodec",
     "SoftErrorRunResult",
@@ -85,6 +107,8 @@ __all__ = [
     "__version__",
     "build_run_manifest",
     "candidate_trace_path",
+    "load_experiment_spec",
+    "parse_experiment_spec",
     "run_uniform_random_soft_error_baseline",
     "sample_uniform_eligible_bit",
     "write_perturbation_trace",
