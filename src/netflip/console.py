@@ -32,6 +32,8 @@ def run(spec: str) -> None:
     click.echo(f"Run output directory: {output.output_dir}")
     click.echo(f"Manifest: {output.manifest_path}")
     click.echo(f"Perturbation trace: {output.perturbation_trace_path}")
+    click.echo(f"Summary JSON: {output.summary_json_path}")
+    click.echo(f"Summary CSV: {output.summary_csv_path}")
     click.echo(f"Resolved device: {output.device}")
     click.echo(f"Committed flip count: {output.flip_count}")
     click.echo(f"Stopped because: {output.stopped_because}")

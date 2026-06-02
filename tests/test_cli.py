@@ -175,11 +175,19 @@ def test_cli_run_soft_error_spec_writes_manifest_and_trace(
 
     assert result.exit_code == 0
     assert "Run output directory:" in result.output
+    assert "Summary JSON:" in result.output
+    assert "Summary CSV:" in result.output
     assert "Resolved device: cpu" in result.output
     manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_id"] == "cli-soft-error"
     assert manifest["device"] == "cpu"
     assert manifest["rng_seeds"] == {"python": 7}
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["clean_metrics"] == {"sum": 0}
+    assert summary["flip_count"] == 2
+    assert summary["bit_flip_ratio"] == 2 / 16
+    assert summary["stop_reason"] == "fault_budget"
+    assert (output_dir / "summary.csv").exists()
     trace_lines = (
         (output_dir / "perturbation_trace.jsonl")
         .read_text(encoding="utf-8")

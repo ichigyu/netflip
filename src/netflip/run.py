@@ -34,6 +34,7 @@ from netflip.soft_error import (
     FaultBudget,
     run_uniform_random_soft_error_baseline,
 )
+from netflip.summary import build_run_summary, write_run_summary
 from netflip.trace import write_perturbation_trace
 
 
@@ -44,6 +45,8 @@ class ExperimentRunOutput:
     output_dir: Path
     manifest_path: Path
     perturbation_trace_path: Path
+    summary_json_path: Path
+    summary_csv_path: Path
     clean_baseline_metrics: Mapping[str, JSONScalar]
     flip_count: int
     stopped_because: str
@@ -131,6 +134,13 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
             run_result.perturbation_trace,
             output_dir,
         )
+        summary = build_run_summary(
+            clean_metrics=clean_baseline_metrics,
+            perturbation_trace=run_result.perturbation_trace,
+            stopped_because=run_result.stopped_because,
+            eligible_bit_population=run_result.eligible_bit_population,
+        )
+        summary_json_path, summary_csv_path = write_run_summary(summary, output_dir)
         manifest_path = write_run_manifest(
             _build_manifest(
                 spec=spec,
@@ -140,13 +150,15 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
             ),
             output_dir,
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise ExperimentRunError(str(exc)) from exc
 
     return ExperimentRunOutput(
         output_dir=output_dir,
         manifest_path=manifest_path,
         perturbation_trace_path=perturbation_trace_path,
+        summary_json_path=summary_json_path,
+        summary_csv_path=summary_csv_path,
         clean_baseline_metrics=clean_baseline_metrics,
         flip_count=run_result.flip_count,
         stopped_because=run_result.stopped_because,
