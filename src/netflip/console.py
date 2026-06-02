@@ -5,7 +5,7 @@ from __future__ import annotations
 import click
 
 from netflip import __version__
-from netflip.run import execute_experiment_run
+from netflip.run import ExperimentRunError, execute_experiment_run
 
 
 @click.group(
@@ -26,7 +26,7 @@ def run(spec: str) -> None:
     """Run an experiment spec."""
     try:
         output = execute_experiment_run(spec)
-    except Exception as exc:
+    except ExperimentRunError as exc:
         raise click.ClickException(str(exc)) from exc
 
     click.echo(f"Run output directory: {output.output_dir}")

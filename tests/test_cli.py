@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from click.testing import CliRunner
 
 from netflip import __version__
@@ -225,6 +226,25 @@ def test_cli_run_unsupported_scenario_type_fails_clearly(tmp_path: Path) -> None
 
     assert result.exit_code == 1
     assert "unsupported scenario type 'attack'" in result.stderr
+
+
+def test_cli_run_allows_unexpected_errors_to_propagate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.console as console_module
+
+    def broken_execute_experiment_run(spec: str) -> object:
+        raise RuntimeError("internal bug")
+
+    monkeypatch.setattr(
+        console_module,
+        "execute_experiment_run",
+        broken_execute_experiment_run,
+    )
+    runner = CliRunner()
+
+    with pytest.raises(RuntimeError, match="internal bug"):
+        runner.invoke(main, ["run", "spec.yaml"], catch_exceptions=False)
 
 
 def test_cli_run_requires_spec_argument() -> None:

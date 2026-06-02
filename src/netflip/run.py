@@ -15,6 +15,7 @@ from typing import Any
 
 from netflip import __version__
 from netflip.benchmarks import (
+    CIFAR_RESNET20_BENCHMARK_ID,
     build_cifar10_dataloaders,
     evaluate_classification_metrics,
     load_cifar_resnet20_quantized_artifact,
@@ -27,7 +28,7 @@ from netflip.manifest import (
     write_run_manifest,
 )
 from netflip.model_adapter import ModelAdapter
-from netflip.runtime_device import resolve_torch_device
+from netflip.runtime_device import RuntimeDeviceUnavailableError, resolve_torch_device
 from netflip.soft_error import (
     SOFT_ERROR_SCENARIO_TYPE,
     FaultBudget,
@@ -49,14 +50,27 @@ class ExperimentRunOutput:
     device: str
 
 
-class UnsupportedScenarioError(ValueError):
+class ExperimentRunError(ValueError):
+    """Raised for expected, user-facing run execution errors."""
+
+
+class UnsupportedScenarioError(ExperimentRunError):
     """Raised when ``netflip run`` cannot execute the configured scenario."""
+
+
+class UnsupportedBenchmarkError(ExperimentRunError):
+    """Raised when ``netflip run`` cannot execute the configured benchmark."""
 
 
 def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutput:
     """Load and execute one supported Experiment Spec."""
     resolved_spec_path = Path(spec_path)
-    spec = load_experiment_spec(resolved_spec_path)
+    try:
+        spec = load_experiment_spec(resolved_spec_path)
+    except (OSError, ValueError) as exc:
+        msg = f"failed to load Experiment Spec {resolved_spec_path}: {exc}"
+        raise ExperimentRunError(msg) from exc
+
     if spec.scenario.type != SOFT_ERROR_SCENARIO_TYPE:
         msg = (
             f"unsupported scenario type {spec.scenario.type!r}; "
@@ -64,15 +78,23 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
         )
         raise UnsupportedScenarioError(msg)
 
-    device = resolve_torch_device(spec.device)
+    try:
+        device = str(resolve_torch_device(spec.device))
+    except (RuntimeDeviceUnavailableError, ValueError) as exc:
+        raise ExperimentRunError(str(exc)) from exc
+
     artifact = _load_benchmark_artifact(spec)
-    dataloaders = build_cifar10_dataloaders(
-        root=spec.dataset.root,
-        selection_split=spec.dataset.selection_split,
-        evaluation_split=spec.dataset.evaluation_split,
-        selection_sample_limit=spec.dataset.selection_sample_limit,
-        evaluation_sample_limit=spec.dataset.evaluation_sample_limit,
-    )
+    try:
+        dataloaders = build_cifar10_dataloaders(
+            root=spec.dataset.root,
+            selection_split=spec.dataset.selection_split,
+            evaluation_split=spec.dataset.evaluation_split,
+            selection_sample_limit=spec.dataset.selection_sample_limit,
+            evaluation_sample_limit=spec.dataset.evaluation_sample_limit,
+        )
+    except (OSError, ValueError, ModuleNotFoundError) as exc:
+        raise ExperimentRunError(str(exc)) from exc
+
     clean_baseline_metrics = _classification_metrics(
         artifact.model,
         dataloaders.evaluation,
@@ -81,36 +103,42 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
 
     def metric_evaluator(adapter: ModelAdapter) -> Mapping[str, JSONScalar]:
         return _classification_metrics(
-            artifact.model,
+            _adapter_model(adapter, fallback=artifact.model),
             dataloaders.evaluation,
             device=device,
         )
 
-    fault_budget = FaultBudget(
-        max_flip_count=spec.scenario.fault_budget.max_flip_count,
-        max_bit_flip_ratio=spec.scenario.fault_budget.max_bit_flip_ratio,
-    )
-    run_result = run_uniform_random_soft_error_baseline(
-        adapter=artifact.adapter,
-        metric_evaluator=metric_evaluator,
-        fault_budget=fault_budget,
-        rng_seed=spec.scenario.rng_seed,
-    )
+    try:
+        fault_budget = FaultBudget(
+            max_flip_count=spec.scenario.fault_budget.max_flip_count,
+            max_bit_flip_ratio=spec.scenario.fault_budget.max_bit_flip_ratio,
+        )
+        run_result = run_uniform_random_soft_error_baseline(
+            adapter=artifact.adapter,
+            metric_evaluator=metric_evaluator,
+            fault_budget=fault_budget,
+            rng_seed=spec.scenario.rng_seed,
+        )
+    except ValueError as exc:
+        raise ExperimentRunError(str(exc)) from exc
 
     output_dir = Path(spec.output_dir)
-    perturbation_trace_path = write_perturbation_trace(
-        run_result.perturbation_trace,
-        output_dir,
-    )
-    manifest_path = write_run_manifest(
-        _build_manifest(
-            spec=spec,
-            spec_path=resolved_spec_path,
-            artifact=artifact,
-            device=device,
-        ),
-        output_dir,
-    )
+    try:
+        perturbation_trace_path = write_perturbation_trace(
+            run_result.perturbation_trace,
+            output_dir,
+        )
+        manifest_path = write_run_manifest(
+            _build_manifest(
+                spec=spec,
+                spec_path=resolved_spec_path,
+                artifact=artifact,
+                device=device,
+            ),
+            output_dir,
+        )
+    except OSError as exc:
+        raise ExperimentRunError(str(exc)) from exc
 
     return ExperimentRunOutput(
         output_dir=output_dir,
@@ -124,14 +152,27 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
 
 
 def _load_benchmark_artifact(spec: ExperimentSpec) -> Any:
+    if (
+        spec.model.benchmark != CIFAR_RESNET20_BENCHMARK_ID
+        or spec.model.architecture != "resnet20"
+    ):
+        msg = (
+            "unsupported benchmark model configuration "
+            f"{spec.model.benchmark!r}/{spec.model.architecture!r}; "
+            "netflip run currently supports 'cifar10-resnet20'/'resnet20'"
+        )
+        raise UnsupportedBenchmarkError(msg)
     if spec.model.quantization.scale_path is None:
         msg = "soft-error CIFAR-10 ResNet-20 runs require model.quantization.scale_path"
-        raise ValueError(msg)
-    return load_cifar_resnet20_quantized_artifact(
-        checkpoint_path=spec.model.checkpoint.path,
-        scale_path=spec.model.quantization.scale_path,
-        num_classes=spec.model.num_classes,
-    )
+        raise ExperimentRunError(msg)
+    try:
+        return load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=spec.model.checkpoint.path,
+            scale_path=spec.model.quantization.scale_path,
+            num_classes=spec.model.num_classes,
+        )
+    except (OSError, ValueError, ModuleNotFoundError) as exc:
+        raise ExperimentRunError(str(exc)) from exc
 
 
 def _classification_metrics(
@@ -144,6 +185,10 @@ def _classification_metrics(
         evaluate_classification_metrics(model, dataloader, device=device),
         context="classification metrics",
     )
+
+
+def _adapter_model(adapter: ModelAdapter, *, fallback: Any) -> Any:
+    return getattr(adapter, "model", fallback)
 
 
 def _build_manifest(
@@ -216,13 +261,13 @@ def _dataset_id(dataset_name: str, split: str, sample_limit: int | None) -> str:
 def _dataset_request_checksum(
     *,
     dataset_name: str,
-    root: str,
+    root: str | PathLike[str],
     split: str,
     sample_limit: int | None,
 ) -> str:
     payload = {
         "dataset_name": dataset_name,
-        "root": root,
+        "root": str(root),
         "sample_limit": sample_limit,
         "split": split,
     }
