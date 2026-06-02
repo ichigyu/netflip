@@ -36,6 +36,12 @@ dependencies = [
   "pydantic>=2.11,<3",
 ]
 
+[project.optional-dependencies]
+benchmark = [
+  "torch>=2.5",
+  "torchvision>=0.20",
+]
+
 [project.scripts]
 netflip = "netflip.console:main"
 
