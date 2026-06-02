@@ -19,6 +19,9 @@ API Reference
 .. automodule:: netflip.pytorch_adapter
    :members:
 
+.. automodule:: netflip.runtime_device
+   :members:
+
 .. automodule:: netflip.benchmarks.cifar_resnet20
    :members:
 

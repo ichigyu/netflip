@@ -1,5 +1,6 @@
 schema_version: "2026.1"
 run_id: cifar10-resnet20-random-soft-error
+device: auto
 model:
   benchmark: cifar10-resnet20
   architecture: resnet20
