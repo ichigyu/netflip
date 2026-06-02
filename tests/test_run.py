@@ -145,6 +145,32 @@ def test_execute_experiment_run_wraps_soft_error_run_errors(
         run_module.execute_experiment_run(spec_path)
 
 
+def test_execute_experiment_run_wraps_metric_shape_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_soft_error_spec(tmp_path)
+    monkeypatch.setattr(run_module, "resolve_torch_device", lambda requested: "cpu")
+    monkeypatch.setattr(
+        run_module,
+        "_load_benchmark_artifact",
+        lambda spec: _fake_artifact(tmp_path),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "build_cifar10_dataloaders",
+        lambda **kwargs: SimpleNamespace(evaluation=["eval"]),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "evaluate_classification_metrics",
+        lambda model, dataloader, *, device: {"nested": {"bad": "shape"}},
+    )
+
+    with pytest.raises(ExperimentRunError, match="JSON scalar"):
+        run_module.execute_experiment_run(spec_path)
+
+
 def test_execute_experiment_run_wraps_output_write_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -260,6 +286,31 @@ def test_run_metadata_helpers_cover_optional_branches(
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("git missing")),
     )
     assert run_module._current_git_commit() == "unknown"
+
+
+def test_build_manifest_resolves_spec_and_artifact_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_soft_error_spec(tmp_path)
+    spec = run_module.load_experiment_spec(spec_path)
+    artifact = _fake_artifact(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    manifest = run_module._build_manifest(
+        spec=spec,
+        spec_path=Path("soft-error.yaml"),
+        artifact=artifact,
+        device="cpu",
+    )
+
+    assert manifest.model_checkpoint_path == str((tmp_path / "checkpoint.pt").resolve())
+    assert manifest.model_checkpoint_checksum == run_module._file_sha256(
+        (tmp_path / "checkpoint.pt").resolve()
+    )
+    assert manifest.quantization_metadata["scale_path"] == str(
+        (tmp_path / "scales.json").resolve()
+    )
 
 
 def test_json_scalar_mapping_rejects_invalid_metric_shapes() -> None:

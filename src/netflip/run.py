@@ -64,7 +64,7 @@ class UnsupportedBenchmarkError(ExperimentRunError):
 
 def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutput:
     """Load and execute one supported Experiment Spec."""
-    resolved_spec_path = Path(spec_path)
+    resolved_spec_path = Path(spec_path).resolve()
     try:
         spec = load_experiment_spec(resolved_spec_path)
     except (OSError, ValueError) as exc:
@@ -95,11 +95,14 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
     except (OSError, ValueError, ModuleNotFoundError) as exc:
         raise ExperimentRunError(str(exc)) from exc
 
-    clean_baseline_metrics = _classification_metrics(
-        artifact.model,
-        dataloaders.evaluation,
-        device=device,
-    )
+    try:
+        clean_baseline_metrics = _classification_metrics(
+            artifact.model,
+            dataloaders.evaluation,
+            device=device,
+        )
+    except TypeError as exc:
+        raise ExperimentRunError(str(exc)) from exc
 
     def metric_evaluator(adapter: ModelAdapter) -> Mapping[str, JSONScalar]:
         return _classification_metrics(
@@ -119,7 +122,7 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
             fault_budget=fault_budget,
             rng_seed=spec.scenario.rng_seed,
         )
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise ExperimentRunError(str(exc)) from exc
 
     output_dir = Path(spec.output_dir)
@@ -198,14 +201,16 @@ def _build_manifest(
     artifact: Any,
     device: str,
 ) -> Any:
+    resolved_spec_path = spec_path.resolve()
+    checkpoint_path = Path(artifact.checkpoint_path).resolve()
     return build_run_manifest(
         run_id=spec.run_id,
         created_at=datetime.now(timezone.utc),
         git_commit=_current_git_commit(),
-        experiment_spec_hash=_file_sha256(spec_path),
+        experiment_spec_hash=_file_sha256(resolved_spec_path),
         model_artifact_id=spec.model.benchmark,
-        model_checkpoint_path=str(artifact.checkpoint_path),
-        model_checkpoint_checksum=_file_sha256(Path(artifact.checkpoint_path)),
+        model_checkpoint_path=str(checkpoint_path),
+        model_checkpoint_checksum=_file_sha256(checkpoint_path),
         quantization_metadata=_quantization_metadata(artifact),
         selection_dataset_id=_dataset_id(
             spec.dataset.name,
@@ -246,7 +251,7 @@ def _quantization_metadata(artifact: Any) -> dict[str, JSONScalar]:
     }
     scale_path = getattr(artifact, "scale_path", None)
     if scale_path is not None:
-        resolved_scale_path = Path(scale_path)
+        resolved_scale_path = Path(scale_path).resolve()
         metadata["scale_path"] = str(resolved_scale_path)
         metadata["scale_checksum"] = _file_sha256(resolved_scale_path)
     return metadata
