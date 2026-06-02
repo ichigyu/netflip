@@ -312,20 +312,32 @@ def test_prepare_cifar_resnet20_artifacts_writes_loadable_outputs(
     )
     monkeypatch.setattr(
         cifar_resnet20,
+        "_build_cifar10_training_dataloader",
+        lambda **kwargs: [
+            (
+                torch.zeros(2, 3, 32, 32),
+                torch.zeros(2, dtype=torch.long),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
         "evaluate_classification_metrics",
         lambda model, dataloader, *, device: {
             "top1_accuracy": 0.25,
             "cross_entropy": 1.5,
         },
     )
+    progress_messages: list[str] = []
 
     output = prepare_cifar_resnet20_artifacts(
         dataset_root=tmp_path / "missing-dataset",
         output_dir=tmp_path / "checkpoints",
-        epochs=0,
+        epochs=1,
         batch_size=4,
         evaluation_sample_limit=4,
         device="cpu",
+        progress=progress_messages.append,
     )
 
     assert output.fp32_checkpoint_path.is_file()
@@ -343,6 +355,37 @@ def test_prepare_cifar_resnet20_artifacts_writes_loadable_outputs(
     artifact.model.eval()
     outputs = artifact.model(torch.zeros(1, 3, 32, 32))
     assert tuple(outputs.shape) == (1, CIFAR10_CLASSES)
+    assert "== Training Data ==" in progress_messages
+    assert "  samples: unknown" in progress_messages
+    assert "== Training ==" in progress_messages
+    assert any("001/001" in message and "%" in message for message in progress_messages)
+    assert "== Clean Baseline ==" in progress_messages
+    assert "  top1: 25.00%" in progress_messages
+    assert "== Done ==" in progress_messages
+
+
+def test_prepare_cifar_resnet20_artifacts_validates_schedule(
+    tmp_path: Any,
+) -> None:
+    pytest.importorskip("torch")
+
+    with pytest.raises(ValueError, match="same number"):
+        prepare_cifar_resnet20_artifacts(
+            dataset_root=tmp_path,
+            epochs=0,
+            schedule=(80, 120),
+            gammas=(0.1,),
+            device="cpu",
+        )
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        prepare_cifar_resnet20_artifacts(
+            dataset_root=tmp_path,
+            epochs=0,
+            schedule=(80, 80),
+            gammas=(0.1, 0.1),
+            device="cpu",
+        )
 
 
 def test_load_cifar_resnet20_quantized_artifact_with_fake_runtime(

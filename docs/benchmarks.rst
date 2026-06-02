@@ -71,6 +71,15 @@ the FP32 ResNet-20 model, writes an intermediate FP32 checkpoint, quantizes
 perturbable ``*.weight`` tensors with BFA-Compatible Int8 Quantization, writes
 Per-Tensor Quantization Scale metadata, and validates that the emitted int8
 artifact can be loaded by ``load_cifar_resnet20_quantized_artifact``.
+When ``--download`` is used, NetFlip labels the dataset preparation phase and
+torchvision may show its own 0-100% download progress. Training emits one line
+per epoch with learning rate, training loss, and top-1 accuracy, and keeps a
+batch-level progress bar visible while each epoch is running.
+
+The default training configuration mirrors the CIFAR-10 ResNet-20 setup from
+the upstream BFA training script: 160 epochs, SGD, batch size 128, learning rate
+0.1, momentum 0.9, weight decay 0.0003, and learning-rate decays at epochs 80
+and 120 with gamma 0.1 at each milestone.
 
 Default outputs match the example Experiment Specs:
 
@@ -83,6 +92,10 @@ Default outputs match the example Experiment Specs:
 
 ``checkpoints/cifar10/resnet20-int8-scales.json``
    Per-tensor scale metadata for each perturbable weight tensor.
+
+The local artifact directories ``data/``, ``checkpoints/``, ``runs/``, and
+``save/`` are ignored by git so downloaded datasets, trained checkpoints, and
+Run outputs are not uploaded accidentally.
 
 CIFAR-10 is downloaded only when ``--download`` is provided. Without that flag,
 ``--dataset-root`` must point at an existing CIFAR-10 root:

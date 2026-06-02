@@ -5,7 +5,17 @@ from __future__ import annotations
 import click
 
 from netflip import __version__
-from netflip.benchmarks import prepare_cifar_resnet20_artifacts
+from netflip.benchmarks import (
+    BFA_CIFAR_RESNET20_BATCH_SIZE,
+    BFA_CIFAR_RESNET20_EPOCHS,
+    BFA_CIFAR_RESNET20_LEARNING_RATE,
+    BFA_CIFAR_RESNET20_LR_GAMMAS,
+    BFA_CIFAR_RESNET20_LR_SCHEDULE,
+    BFA_CIFAR_RESNET20_MOMENTUM,
+    BFA_CIFAR_RESNET20_NUM_WORKERS,
+    BFA_CIFAR_RESNET20_WEIGHT_DECAY,
+    prepare_cifar_resnet20_artifacts,
+)
 from netflip.run import ExperimentRunError, execute_experiment_run
 from netflip.runtime_device import RuntimeDeviceUnavailableError
 
@@ -64,35 +74,55 @@ def run(spec: str) -> None:
 )
 @click.option(
     "--epochs",
-    default=1,
+    default=BFA_CIFAR_RESNET20_EPOCHS,
     show_default=True,
     type=int,
     help="Number of FP32 training epochs before quantization.",
 )
 @click.option(
     "--batch-size",
-    default=128,
+    default=BFA_CIFAR_RESNET20_BATCH_SIZE,
     show_default=True,
     type=int,
     help="Training and evaluation batch size.",
 )
 @click.option(
     "--learning-rate",
-    default=0.1,
+    default=BFA_CIFAR_RESNET20_LEARNING_RATE,
     show_default=True,
     type=float,
     help="SGD learning rate.",
 )
 @click.option(
+    "--schedule",
+    "schedule",
+    multiple=True,
+    default=BFA_CIFAR_RESNET20_LR_SCHEDULE,
+    show_default=True,
+    type=int,
+    help="Epoch milestone for learning-rate decay. Repeat for multiple milestones.",
+)
+@click.option(
+    "--gamma",
+    "gammas",
+    multiple=True,
+    default=BFA_CIFAR_RESNET20_LR_GAMMAS,
+    show_default=True,
+    type=float,
+    help=(
+        "Learning-rate decay factor paired with --schedule. Repeat for each milestone."
+    ),
+)
+@click.option(
     "--momentum",
-    default=0.9,
+    default=BFA_CIFAR_RESNET20_MOMENTUM,
     show_default=True,
     type=float,
     help="SGD momentum.",
 )
 @click.option(
     "--weight-decay",
-    default=5e-4,
+    default=BFA_CIFAR_RESNET20_WEIGHT_DECAY,
     show_default=True,
     type=float,
     help="SGD weight decay.",
@@ -111,7 +141,7 @@ def run(spec: str) -> None:
 )
 @click.option(
     "--num-workers",
-    default=0,
+    default=BFA_CIFAR_RESNET20_NUM_WORKERS,
     show_default=True,
     type=int,
     help="PyTorch DataLoader worker count.",
@@ -137,6 +167,8 @@ def prepare_cifar10_resnet20(
     epochs: int,
     batch_size: int,
     learning_rate: float,
+    schedule: tuple[int, ...],
+    gammas: tuple[float, ...],
     momentum: float,
     weight_decay: float,
     train_sample_limit: int | None,
@@ -154,6 +186,8 @@ def prepare_cifar10_resnet20(
             epochs=epochs,
             batch_size=batch_size,
             learning_rate=learning_rate,
+            schedule=schedule,
+            gammas=gammas,
             momentum=momentum,
             weight_decay=weight_decay,
             train_sample_limit=train_sample_limit,
@@ -161,6 +195,7 @@ def prepare_cifar10_resnet20(
             num_workers=num_workers,
             device=device,
             rng_seed=rng_seed,
+            progress=_echo_progress,
         )
     except (
         FileNotFoundError,
@@ -170,10 +205,20 @@ def prepare_cifar10_resnet20(
     ) as exc:
         raise click.ClickException(str(exc)) from exc
 
-    click.echo(f"FP32 checkpoint: {output.fp32_checkpoint_path}")
-    click.echo(f"Int8 checkpoint: {output.int8_checkpoint_path}")
-    click.echo(f"Scale metadata: {output.scale_path}")
-    click.echo(f"Resolved device: {output.device}")
-    click.echo(f"Training epochs: {output.epochs}")
+    click.echo()
+    click.echo("== Prepared Artifact Summary ==")
+    click.echo(f"  fp32_checkpoint: {output.fp32_checkpoint_path}")
+    click.echo(f"  int8_checkpoint: {output.int8_checkpoint_path}")
+    click.echo(f"  scale_metadata: {output.scale_path}")
+    click.echo(f"  device: {output.device}")
+    click.echo(f"  epochs: {output.epochs}")
+    click.echo("  metrics:")
     for metric_name, metric_value in output.evaluation_metrics.items():
-        click.echo(f"{metric_name}: {metric_value:.6g}")
+        click.echo(f"    {metric_name}: {metric_value:.6g}")
+
+
+def _echo_progress(message: str) -> None:
+    if message.startswith("\r"):
+        click.echo(message, nl=False)
+        return
+    click.echo(message)

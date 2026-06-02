@@ -23,6 +23,12 @@ dist/
 *.egg-info/
 docs/_build/
 
+# Local datasets, checkpoints, and experiment outputs
+checkpoints/
+data/
+runs/
+save/
+
 # Local environment files
 .env
 .env.*
