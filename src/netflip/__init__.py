@@ -64,6 +64,15 @@ from netflip.soft_error import (
     run_uniform_random_soft_error_baseline,
     sample_uniform_eligible_bit,
 )
+from netflip.summary import (
+    RUN_SUMMARY_CSV_FILENAME,
+    RUN_SUMMARY_JSON_FILENAME,
+    RunSummary,
+    build_run_summary,
+    write_run_summary,
+    write_run_summary_csv,
+    write_run_summary_json,
+)
 from netflip.trace import (
     CANDIDATE_TRACE_FILENAME,
     PERTURBATION_TRACE_FILENAME,
@@ -91,6 +100,8 @@ __all__ = [
     "OUTPUT_SCHEMA_VERSION",
     "PERTURBATION_TRACE_FILENAME",
     "RUN_MANIFEST_FILENAME",
+    "RUN_SUMMARY_CSV_FILENAME",
+    "RUN_SUMMARY_JSON_FILENAME",
     "SIGNED_INT8_TWO_COMPLEMENT_REPRESENTATION",
     "SOFT_ERROR_SCENARIO_TYPE",
     "UINT8_MAX",
@@ -118,6 +129,7 @@ __all__ = [
     "RandomSoftErrorScenarioSpec",
     "ResolvedTorchDevice",
     "RunManifest",
+    "RunSummary",
     "RuntimeDeviceUnavailableError",
     "SignedInt8TwoComplementCodec",
     "SoftErrorRunResult",
@@ -125,6 +137,7 @@ __all__ = [
     "UniformEligibleBitSelection",
     "__version__",
     "build_run_manifest",
+    "build_run_summary",
     "candidate_trace_path",
     "load_cifar_resnet20_quantized_artifact",
     "load_experiment_spec",
@@ -135,4 +148,7 @@ __all__ = [
     "sample_uniform_eligible_bit",
     "write_perturbation_trace",
     "write_run_manifest",
+    "write_run_summary",
+    "write_run_summary_csv",
+    "write_run_summary_json",
 ]
