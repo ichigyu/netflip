@@ -23,6 +23,8 @@ from netflip.benchmarks import (
     compute_top1_accuracy,
     load_cifar_resnet20_quantized_artifact,
     load_per_tensor_scale_metadata,
+    prepare_cifar_resnet20_artifacts,
+    quantize_cifar_resnet20_state_dict,
 )
 
 
@@ -270,6 +272,77 @@ def test_load_per_tensor_scale_metadata_validates_expected_tensor_names(
     metadata = load_per_tensor_scale_metadata(scale_path)
     with pytest.raises(KeyError, match="unknown per-tensor"):
         metadata.scale_for("other.weight")
+
+
+def test_quantize_cifar_resnet20_state_dict_emits_int8_weights() -> None:
+    torch = pytest.importorskip("torch")
+
+    model = build_cifar_resnet20()
+    quantized_state, metadata = quantize_cifar_resnet20_state_dict(model)
+    perturbable_names = {
+        name
+        for name, parameter in model.named_parameters()
+        if name == "weight" or (name.endswith(".weight") and int(parameter.numel()) > 0)
+    }
+
+    assert set(metadata.tensors) == perturbable_names
+    assert metadata.codec == "signed-int8-two-complement"
+    assert metadata.scale_granularity == "per-tensor"
+    for tensor_name in perturbable_names:
+        assert quantized_state[tensor_name].dtype == torch.int8
+        assert metadata.tensors[tensor_name].scale > 0
+        assert metadata.tensors[tensor_name].shape == tuple(
+            quantized_state[tensor_name].shape
+        )
+        assert metadata.tensors[tensor_name].dtype == "int8"
+    assert quantized_state["bn1.running_mean"].dtype == torch.float32
+
+
+def test_prepare_cifar_resnet20_artifacts_writes_loadable_outputs(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch = pytest.importorskip("torch")
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "build_cifar10_dataloader",
+        lambda *args, **kwargs: ["evaluation-loader"],
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "evaluate_classification_metrics",
+        lambda model, dataloader, *, device: {
+            "top1_accuracy": 0.25,
+            "cross_entropy": 1.5,
+        },
+    )
+
+    output = prepare_cifar_resnet20_artifacts(
+        dataset_root=tmp_path / "missing-dataset",
+        output_dir=tmp_path / "checkpoints",
+        epochs=0,
+        batch_size=4,
+        evaluation_sample_limit=4,
+        device="cpu",
+    )
+
+    assert output.fp32_checkpoint_path.is_file()
+    assert output.int8_checkpoint_path.is_file()
+    assert output.scale_path.is_file()
+    assert output.evaluation_metrics == {
+        "top1_accuracy": 0.25,
+        "cross_entropy": 1.5,
+    }
+    artifact = load_cifar_resnet20_quantized_artifact(
+        checkpoint_path=output.int8_checkpoint_path,
+        scale_path=output.scale_path,
+    )
+    assert artifact.adapter.perturbable_tensors()
+    artifact.model.eval()
+    outputs = artifact.model(torch.zeros(1, 3, 32, 32))
+    assert tuple(outputs.shape) == (1, CIFAR10_CLASSES)
 
 
 def test_load_cifar_resnet20_quantized_artifact_with_fake_runtime(

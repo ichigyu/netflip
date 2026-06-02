@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
 from netflip.pytorch_adapter import PyTorchModelAdapter
+from netflip.runtime_device import resolve_torch_device
 
 CIFAR_RESNET20_BENCHMARK_ID = "cifar10-resnet20"
 CIFAR10_CLASSES = 10
@@ -102,10 +103,30 @@ class CifarResNet20QuantizedArtifact:
     quantization: PerTensorScaleMetadata
 
 
+@dataclass(frozen=True)
+class CifarResNet20ArtifactPreparationOutput:
+    """Paths and metrics emitted by CIFAR-10 ResNet-20 artifact preparation."""
+
+    fp32_checkpoint_path: Path
+    int8_checkpoint_path: Path
+    scale_path: Path
+    evaluation_metrics: Mapping[str, float]
+    device: str
+    epochs: int
+
+
 class TorchModule(Protocol):
     """Minimal structural type for lazily imported PyTorch modules."""
 
     training: bool
+
+    def eval(self) -> Any:
+        """Put the module in evaluation mode."""
+        ...
+
+    def train(self) -> Any:
+        """Put the module in training mode."""
+        ...
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Run the module."""
@@ -117,6 +138,14 @@ class CifarResNet20Model(TorchModule, Protocol):
 
     benchmark_id: str
     config: ResNet20Config
+
+    def parameters(self) -> Iterable[Any]:
+        """Return model parameters."""
+        ...
+
+    def named_parameters(self) -> Iterable[tuple[str, Any]]:
+        """Return named model parameters."""
+        ...
 
 
 def build_cifar_resnet20(
@@ -136,6 +165,180 @@ def build_cifar_resnet20(
         num_classes=num_classes,
     )
     return _make_cifar_resnet(config, torch)
+
+
+def prepare_cifar_resnet20_artifacts(
+    *,
+    dataset_root: str | PathLike[str],
+    output_dir: str | PathLike[str] = "checkpoints/cifar10",
+    download: bool = False,
+    epochs: int = 1,
+    batch_size: int = 128,
+    learning_rate: float = 0.1,
+    momentum: float = 0.9,
+    weight_decay: float = 5e-4,
+    train_sample_limit: int | None = None,
+    evaluation_sample_limit: int | None = None,
+    num_workers: int = 0,
+    device: str = "auto",
+    rng_seed: int = 2026,
+) -> CifarResNet20ArtifactPreparationOutput:
+    """Train and quantize CIFAR-10 ResNet-20 benchmark artifacts.
+
+    The emitted int8 checkpoint and per-tensor scale metadata match the
+    default paths used by the example CIFAR-10 Experiment Specs.
+    """
+    _validate_artifact_preparation_settings(
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        momentum=momentum,
+        weight_decay=weight_decay,
+        train_sample_limit=train_sample_limit,
+        evaluation_sample_limit=evaluation_sample_limit,
+        num_workers=num_workers,
+    )
+    torch = _require_pytorch()
+    resolved_device = resolve_torch_device(device)
+    torch.manual_seed(rng_seed)
+
+    model = build_cifar_resnet20()
+    move_model = getattr(model, "to", None)
+    if callable(move_model):
+        move_model(resolved_device)
+
+    if epochs > 0:
+        train_loader = _build_cifar10_training_dataloader(
+            root=dataset_root,
+            batch_size=batch_size,
+            download=download,
+            sample_limit=train_sample_limit,
+            num_workers=num_workers,
+        )
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=learning_rate,
+            momentum=momentum,
+            weight_decay=weight_decay,
+        )
+        for _epoch_index in range(epochs):
+            _train_cifar_resnet20_epoch(
+                model,
+                train_loader,
+                optimizer=optimizer,
+                torch=torch,
+                device=resolved_device,
+            )
+
+    evaluation_loader = build_cifar10_dataloader(
+        Cifar10DatasetRequest(
+            role=Cifar10DatasetRole.EVALUATION,
+            root=dataset_root,
+            split="test",
+            sample_limit=evaluation_sample_limit,
+            download=download,
+        ),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+    )
+    evaluation_metrics = evaluate_classification_metrics(
+        model,
+        evaluation_loader,
+        device=resolved_device,
+    )
+
+    resolved_output_dir = Path(output_dir)
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    fp32_checkpoint_path = resolved_output_dir / "resnet20-fp32.pt"
+    int8_checkpoint_path = resolved_output_dir / "resnet20-int8.pt"
+    scale_path = resolved_output_dir / "resnet20-int8-scales.json"
+
+    torch.save(_cpu_state_dict(model), str(fp32_checkpoint_path))
+    int8_state, scale_metadata = quantize_cifar_resnet20_state_dict(model)
+    torch.save(int8_state, str(int8_checkpoint_path))
+    write_per_tensor_scale_metadata(scale_metadata, scale_path)
+    load_cifar_resnet20_quantized_artifact(
+        checkpoint_path=int8_checkpoint_path,
+        scale_path=scale_path,
+    )
+
+    return CifarResNet20ArtifactPreparationOutput(
+        fp32_checkpoint_path=fp32_checkpoint_path,
+        int8_checkpoint_path=int8_checkpoint_path,
+        scale_path=scale_path,
+        evaluation_metrics=evaluation_metrics,
+        device=resolved_device,
+        epochs=epochs,
+    )
+
+
+def quantize_cifar_resnet20_state_dict(
+    model: CifarResNet20Model,
+) -> tuple[dict[str, Any], PerTensorScaleMetadata]:
+    """Return a BFA-compatible int8 state dict and scale metadata for a model."""
+    torch = _require_pytorch()
+    state = _state_dict_mapping(model)
+    perturbable_tensor_names = set(_perturbable_weight_tensor_names(model))
+    quantized_state: dict[str, Any] = {}
+    scale_tensors: dict[str, PerTensorScale] = {}
+
+    for tensor_name, tensor in state.items():
+        detached_tensor = _clone_detached_tensor(tensor)
+        if tensor_name not in perturbable_tensor_names:
+            quantized_state[tensor_name] = _cpu_tensor_clone(detached_tensor)
+            continue
+
+        cpu_tensor = _cpu_tensor_clone(detached_tensor).float()
+        scale = _per_tensor_int8_scale(cpu_tensor, tensor_name=tensor_name, torch=torch)
+        quantized_tensor = _quantize_tensor_to_int8(
+            cpu_tensor,
+            scale=scale,
+            torch=torch,
+        )
+        quantized_state[tensor_name] = quantized_tensor
+        scale_tensors[tensor_name] = PerTensorScale(
+            tensor_name=tensor_name,
+            scale=scale,
+            shape=_tensor_shape(quantized_tensor),
+            dtype="int8",
+        )
+
+    return (
+        quantized_state,
+        PerTensorScaleMetadata(
+            codec=SIGNED_INT8_TWO_COMPLEMENT_CODEC,
+            scale_granularity=PER_TENSOR_SCALE_GRANULARITY,
+            tensors=scale_tensors,
+        ),
+    )
+
+
+def write_per_tensor_scale_metadata(
+    metadata: PerTensorScaleMetadata,
+    path: str | PathLike[str],
+) -> Path:
+    """Write per-tensor scale metadata as validated JSON."""
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_metadata = {
+        "codec": metadata.codec,
+        "scale_granularity": metadata.scale_granularity,
+        "tensors": {
+            tensor_name: {
+                "scale": tensor.scale,
+                "shape": list(tensor.shape) if tensor.shape is not None else None,
+                "dtype": tensor.dtype,
+            }
+            for tensor_name, tensor in metadata.tensors.items()
+        },
+    }
+    output_path.write_text(
+        json.dumps(raw_metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    load_per_tensor_scale_metadata(output_path)
+    return output_path
 
 
 def load_cifar_resnet20_quantized_artifact(
@@ -186,7 +389,7 @@ def load_cifar_resnet20_quantized_artifact(
     _load_validated_checkpoint_state(
         model,
         checkpoint_state,
-        quantized_tensor_names=quantization.tensors.keys(),
+        quantization=quantization,
         torch=torch,
     )
 
@@ -602,6 +805,154 @@ def _load_cifar10_dataset(
         raise FileNotFoundError(msg) from exc
 
 
+def _build_cifar10_training_dataloader(
+    *,
+    root: str | PathLike[str],
+    batch_size: int,
+    download: bool,
+    sample_limit: int | None,
+    num_workers: int,
+) -> Any:
+    root_path = Path(root)
+    if not download and not root_path.exists():
+        msg = (
+            "CIFAR-10 training dataset root does not exist: "
+            f"{root_path}. Set download=True only when automatic download is intended."
+        )
+        raise FileNotFoundError(msg)
+    torchvision = _require_torchvision()
+    torch = _require_pytorch()
+    dataset = torchvision.datasets.CIFAR10(
+        root=str(root_path),
+        train=True,
+        transform=_make_cifar10_training_transform(torchvision),
+        download=download,
+    )
+    if sample_limit is not None:
+        dataset = torch.utils.data.Subset(
+            dataset,
+            range(min(sample_limit, len(dataset))),
+        )
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=False,
+    )
+
+
+def _train_cifar_resnet20_epoch(
+    model: CifarResNet20Model,
+    dataloader: Any,
+    *,
+    optimizer: Any,
+    torch: Any,
+    device: str,
+) -> None:
+    train = getattr(model, "train", None)
+    if callable(train):
+        train()
+    sample_count = 0
+    for inputs, targets in dataloader:
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+        optimizer.zero_grad(set_to_none=True)
+        outputs = model(inputs)
+        loss = torch.nn.functional.cross_entropy(outputs, targets)
+        loss.backward()
+        optimizer.step()
+        sample_count += int(targets.shape[0])
+    if sample_count == 0:
+        msg = "CIFAR-10 training requires at least one sample"
+        raise ValueError(msg)
+
+
+def _validate_artifact_preparation_settings(
+    *,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    momentum: float,
+    weight_decay: float,
+    train_sample_limit: int | None,
+    evaluation_sample_limit: int | None,
+    num_workers: int,
+) -> None:
+    if epochs < 0:
+        msg = "epochs must be greater than or equal to 0"
+        raise ValueError(msg)
+    if batch_size <= 0:
+        msg = "batch_size must be greater than 0"
+        raise ValueError(msg)
+    if not isfinite(learning_rate) or learning_rate <= 0:
+        msg = "learning_rate must be a finite positive number"
+        raise ValueError(msg)
+    if not isfinite(momentum) or momentum < 0:
+        msg = "momentum must be a finite non-negative number"
+        raise ValueError(msg)
+    if not isfinite(weight_decay) or weight_decay < 0:
+        msg = "weight_decay must be a finite non-negative number"
+        raise ValueError(msg)
+    if train_sample_limit is not None and train_sample_limit <= 0:
+        msg = "train_sample_limit must be greater than 0 when provided"
+        raise ValueError(msg)
+    if evaluation_sample_limit is not None and evaluation_sample_limit <= 0:
+        msg = "evaluation_sample_limit must be greater than 0 when provided"
+        raise ValueError(msg)
+    if num_workers < 0:
+        msg = "num_workers must be greater than or equal to 0"
+        raise ValueError(msg)
+
+
+def _cpu_state_dict(model: CifarResNet20Model) -> dict[str, Any]:
+    return {
+        tensor_name: _cpu_tensor_clone(tensor)
+        for tensor_name, tensor in _state_dict_mapping(model).items()
+    }
+
+
+def _cpu_tensor_clone(tensor: Any) -> Any:
+    detach = getattr(tensor, "detach", None)
+    if callable(detach):
+        tensor = detach()
+    cpu = getattr(tensor, "cpu", None)
+    if callable(cpu):
+        tensor = cpu()
+    clone = getattr(tensor, "clone", None)
+    if callable(clone):
+        return clone()
+    return tensor
+
+
+def _per_tensor_int8_scale(tensor: Any, *, tensor_name: str, torch: Any) -> float:
+    if bool(torch.isnan(tensor).any()) or bool(torch.isinf(tensor).any()):
+        msg = f"tensor {tensor_name!r} contains non-finite values"
+        raise ValueError(msg)
+    max_abs = float(tensor.abs().max().item())
+    if max_abs == 0.0:
+        return 1.0
+    return max_abs / 127.0
+
+
+def _quantize_tensor_to_int8(tensor: Any, *, scale: float, torch: Any) -> Any:
+    scaled = tensor / scale
+    rounded = torch.sign(scaled) * torch.floor(torch.abs(scaled) + 0.5)
+    return torch.clamp(rounded, -128, 127).to(torch.int8)
+
+
+def _make_cifar10_training_transform(torchvision: Any) -> Any:
+    transforms = torchvision.transforms
+    return transforms.Compose(
+        [
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(CIFAR10_NORMALIZATION_MEAN, CIFAR10_NORMALIZATION_STD),
+        ]
+    )
+
+
 def _require_metadata_string(metadata: Mapping[str, Any], key: str) -> str:
     value = metadata.get(key)
     if not isinstance(value, str) or not value:
@@ -865,10 +1216,10 @@ def _load_validated_checkpoint_state(
     model: Any,
     checkpoint_state: Mapping[str, Any],
     *,
-    quantized_tensor_names: Iterable[str],
+    quantization: PerTensorScaleMetadata,
     torch: Any,
 ) -> None:
-    quantized_names = set(quantized_tensor_names)
+    quantized_names = set(quantization.tensors)
     load_state_dict = getattr(model, "load_state_dict", None)
     if not callable(load_state_dict):
         msg = "CIFAR-10 ResNet-20 model must provide callable load_state_dict"
@@ -889,6 +1240,7 @@ def _load_validated_checkpoint_state(
             model,
             tensor_name,
             checkpoint_state[tensor_name],
+            scale=quantization.scale_for(tensor_name),
             torch=torch,
         )
 
@@ -898,6 +1250,7 @@ def _replace_module_state_tensor(
     tensor_name: str,
     tensor: Any,
     *,
+    scale: float | None = None,
     torch: Any,
 ) -> None:
     module, attribute_name = _resolve_state_tensor_parent(model, tensor_name)
@@ -905,6 +1258,8 @@ def _replace_module_state_tensor(
     if _is_model_parameter_name(model, tensor_name):
         parameter = torch.nn.Parameter(clone, requires_grad=False)
         setattr(module, attribute_name, parameter)
+        if attribute_name == "weight" and _is_signed_int8_dtype(_tensor_dtype(clone)):
+            _install_int8_weight_forward(module, scale=scale, torch=torch)
         return
     register_buffer = getattr(module, "register_buffer", None)
     if callable(register_buffer):
@@ -940,6 +1295,73 @@ def _clone_detached_tensor(tensor: Any) -> Any:
     if callable(clone):
         return clone()
     return tensor
+
+
+def _install_int8_weight_forward(
+    module: Any,
+    *,
+    scale: float | None,
+    torch: Any,
+) -> None:
+    if scale is None:
+        msg = "quantized int8 weight forward requires a per-tensor scale"
+        raise ValueError(msg)
+
+    nn = getattr(torch, "nn", None)
+    conv2d_type = getattr(nn, "Conv2d", ())
+    linear_type = getattr(nn, "Linear", ())
+    batchnorm2d_type = getattr(nn, "BatchNorm2d", ())
+    functional = getattr(nn, "functional", None)
+    if functional is None:
+        return
+
+    if isinstance(module, conv2d_type):
+
+        def conv2d_forward(inputs: Any) -> Any:
+            return functional.conv2d(
+                inputs,
+                _dequantized_int8_weight(module, scale=scale),
+                module.bias,
+                module.stride,
+                module.padding,
+                module.dilation,
+                module.groups,
+            )
+
+        module.forward = conv2d_forward
+        return
+
+    if isinstance(module, linear_type):
+
+        def linear_forward(inputs: Any) -> Any:
+            return functional.linear(
+                inputs,
+                _dequantized_int8_weight(module, scale=scale),
+                module.bias,
+            )
+
+        module.forward = linear_forward
+        return
+
+    if isinstance(module, batchnorm2d_type):
+
+        def batchnorm2d_forward(inputs: Any) -> Any:
+            return functional.batch_norm(
+                inputs,
+                module.running_mean,
+                module.running_var,
+                _dequantized_int8_weight(module, scale=scale),
+                module.bias,
+                module.training,
+                module.momentum,
+                module.eps,
+            )
+
+        module.forward = batchnorm2d_forward
+
+
+def _dequantized_int8_weight(module: Any, *, scale: float) -> Any:
+    return module.weight.float() * scale
 
 
 def _tensor_shape(tensor: Any) -> tuple[int, ...]:

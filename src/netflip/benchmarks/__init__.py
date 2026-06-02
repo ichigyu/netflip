@@ -8,6 +8,7 @@ from netflip.benchmarks.cifar_resnet20 import (
     Cifar10DataLoaders,
     Cifar10DatasetRequest,
     Cifar10DatasetRole,
+    CifarResNet20ArtifactPreparationOutput,
     CifarResNet20QuantizedArtifact,
     PerTensorScale,
     PerTensorScaleMetadata,
@@ -22,6 +23,9 @@ from netflip.benchmarks.cifar_resnet20 import (
     evaluate_classification_metrics,
     load_cifar_resnet20_quantized_artifact,
     load_per_tensor_scale_metadata,
+    prepare_cifar_resnet20_artifacts,
+    quantize_cifar_resnet20_state_dict,
+    write_per_tensor_scale_metadata,
 )
 
 __all__ = [
@@ -32,6 +36,7 @@ __all__ = [
     "Cifar10DataLoaders",
     "Cifar10DatasetRequest",
     "Cifar10DatasetRole",
+    "CifarResNet20ArtifactPreparationOutput",
     "CifarResNet20QuantizedArtifact",
     "PerTensorScale",
     "PerTensorScaleMetadata",
@@ -46,4 +51,7 @@ __all__ = [
     "evaluate_classification_metrics",
     "load_cifar_resnet20_quantized_artifact",
     "load_per_tensor_scale_metadata",
+    "prepare_cifar_resnet20_artifacts",
+    "quantize_cifar_resnet20_state_dict",
+    "write_per_tensor_scale_metadata",
 ]

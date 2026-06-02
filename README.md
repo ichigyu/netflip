@@ -27,7 +27,13 @@ Current CLI:
 uv run netflip --version
 ```
 
-The experiment runner is planned for a later MVP work item.
+Prepare CIFAR-10 ResNet-20 artifacts for the example BFA/PBS Run:
+
+```bash
+uv sync --extra benchmark
+uv run netflip prepare-cifar10-resnet20 --download
+uv run netflip run examples/cifar10_resnet20/bfa_pbs.yaml
+```
 
 ## Test And Lint
 
