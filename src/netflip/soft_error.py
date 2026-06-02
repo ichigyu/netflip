@@ -180,17 +180,20 @@ def sample_uniform_eligible_bit(
 ) -> UniformEligibleBitSelection:
     """Sample one unexcluded bit uniformly from the Eligible Bit Population."""
     excluded = excluded_ordinals if excluded_ordinals is not None else frozenset()
-    if len(excluded) >= population.size:
+    _validate_excluded_ordinals(excluded, population.size)
+    remaining_count = population.size - len(excluded)
+    if remaining_count <= 0:
         msg = "no uncommitted eligible bits remain"
         raise ValueError(msg)
 
-    while True:
-        population_ordinal = rng.randrange(population.size)
-        if population_ordinal not in excluded:
-            return population.selection_from_ordinal(
-                population_ordinal,
-                codec=codec,
-            )
+    population_ordinal = _population_ordinal_from_remaining_offset(
+        rng.randrange(remaining_count),
+        excluded,
+    )
+    return population.selection_from_ordinal(
+        population_ordinal,
+        codec=codec,
+    )
 
 
 def run_uniform_random_soft_error_baseline(
@@ -214,67 +217,91 @@ def run_uniform_random_soft_error_baseline(
             eligible_bit_population=population.size,
         )
 
-    rng = Random(seed)
-    committed_ordinals: set[int] = set()
+    sampler = _RemainingOrdinalSampler(population.size)
     entries: list[PerturbationTraceEntry] = []
-    metric_before = _evaluate_metric(metric_evaluator, adapter)
+    rng = Random(seed)
 
-    for step_index in range(max_steps):
-        selection = sample_uniform_eligible_bit(
-            population,
-            rng,
-            excluded_ordinals=committed_ordinals,
-            codec=selected_codec,
-        )
-        committed_ordinals.add(selection.population_ordinal)
+    with adapter.evaluation_mode():
+        metric_before = _evaluate_metric(metric_evaluator, adapter)
 
-        value_before = adapter.read_tensor_value(
-            selection.tensor_name,
-            selection.tensor_index,
-        )
-        value_after = selected_codec.flip_value_bit(value_before, selection.bit_index)
-        adapter.write_tensor_value(
-            selection.tensor_name,
-            selection.tensor_index,
-            value_after,
-        )
-        metric_after = _evaluate_metric(metric_evaluator, adapter)
-        flip_count = step_index + 1
-        entry = PerturbationTraceEntry(
-            step_index=step_index,
-            scenario_type=SOFT_ERROR_SCENARIO_TYPE,
-            strategy_name=UNIFORM_ELIGIBLE_BIT_STRATEGY_NAME,
-            artifact_kind=MODEL_STATE_BITS_ARTIFACT_KIND,
-            tensor_name=selection.tensor_name,
-            tensor_index=selection.tensor_index,
-            representation=SIGNED_INT8_TWO_COMPLEMENT_REPRESENTATION,
-            bit_index=selection.bit_index,
-            bit_role=selection.bit_role,
-            value_before=value_before,
-            value_after=value_after,
-            flip_count=flip_count,
-            bit_flip_ratio=flip_count / population.size,
-            metric_before=metric_before,
-            metric_after=metric_after,
-            selection_score=None,
-            rng_seed=seed,
-            layer_name=selection.layer_name,
-            eligible_bit_population=population.size,
-        )
-        entries.append(entry)
-        if failure_criterion is not None and failure_criterion(entry):
-            return SoftErrorRunResult(
-                perturbation_trace=tuple(entries),
-                stopped_because=FAILURE_CRITERION_STOP_REASON,
+        for step_index in range(max_steps):
+            selection = population.selection_from_ordinal(
+                sampler.sample(rng),
+                codec=selected_codec,
+            )
+            value_before = adapter.read_tensor_value(
+                selection.tensor_name,
+                selection.tensor_index,
+            )
+            value_after = selected_codec.flip_value_bit(
+                value_before,
+                selection.bit_index,
+            )
+            adapter.write_tensor_value(
+                selection.tensor_name,
+                selection.tensor_index,
+                value_after,
+            )
+            metric_after = _evaluate_metric(metric_evaluator, adapter)
+            flip_count = step_index + 1
+            entry = PerturbationTraceEntry(
+                step_index=step_index,
+                scenario_type=SOFT_ERROR_SCENARIO_TYPE,
+                strategy_name=UNIFORM_ELIGIBLE_BIT_STRATEGY_NAME,
+                artifact_kind=MODEL_STATE_BITS_ARTIFACT_KIND,
+                tensor_name=selection.tensor_name,
+                tensor_index=selection.tensor_index,
+                representation=SIGNED_INT8_TWO_COMPLEMENT_REPRESENTATION,
+                bit_index=selection.bit_index,
+                bit_role=selection.bit_role,
+                value_before=value_before,
+                value_after=value_after,
+                flip_count=flip_count,
+                bit_flip_ratio=flip_count / population.size,
+                metric_before=metric_before,
+                metric_after=metric_after,
+                selection_score=None,
+                rng_seed=seed,
+                layer_name=selection.layer_name,
                 eligible_bit_population=population.size,
             )
-        metric_before = metric_after
+            entries.append(entry)
+            if failure_criterion is not None and failure_criterion(entry):
+                return SoftErrorRunResult(
+                    perturbation_trace=tuple(entries),
+                    stopped_because=FAILURE_CRITERION_STOP_REASON,
+                    eligible_bit_population=population.size,
+                )
+            metric_before = metric_after
 
     return SoftErrorRunResult(
         perturbation_trace=tuple(entries),
         stopped_because=FAULT_BUDGET_STOP_REASON,
         eligible_bit_population=population.size,
     )
+
+
+class _RemainingOrdinalSampler:
+    """Sample without replacement from ``range(size)`` using sparse swaps."""
+
+    def __init__(self, size: int) -> None:
+        self._remaining_count = _validate_positive_int(size, "size")
+        self._swaps: dict[int, int] = {}
+
+    def sample(self, rng: Random) -> int:
+        """Return one remaining ordinal and remove it from future draws."""
+        if self._remaining_count <= 0:
+            msg = "no uncommitted eligible bits remain"
+            raise ValueError(msg)
+
+        draw_index = rng.randrange(self._remaining_count)
+        selected_ordinal = self._swaps.get(draw_index, draw_index)
+        last_index = self._remaining_count - 1
+        last_ordinal = self._swaps.get(last_index, last_index)
+        self._swaps[draw_index] = last_ordinal
+        self._swaps.pop(last_index, None)
+        self._remaining_count -= 1
+        return selected_ordinal
 
 
 def _evaluate_metric(
@@ -302,6 +329,29 @@ def _unravel_index(value_ordinal: int, shape: Sequence[int]) -> tuple[int, ...]:
         msg = "value_ordinal is out of bounds for tensor shape"
         raise IndexError(msg)
     return tuple(reversed(coordinates_reversed))
+
+
+def _validate_excluded_ordinals(
+    excluded_ordinals: set[int] | frozenset[int],
+    population_size: int,
+) -> None:
+    for population_ordinal in excluded_ordinals:
+        _validate_population_ordinal(population_ordinal, population_size)
+
+
+def _population_ordinal_from_remaining_offset(
+    remaining_offset: int,
+    excluded_ordinals: set[int] | frozenset[int],
+) -> int:
+    population_ordinal = _validate_non_negative_int(
+        remaining_offset,
+        "remaining_offset",
+    )
+    for excluded_ordinal in sorted(excluded_ordinals):
+        if excluded_ordinal > population_ordinal:
+            break
+        population_ordinal += 1
+    return population_ordinal
 
 
 def _validate_population_ordinal(population_ordinal: int, population_size: int) -> int:
