@@ -19,6 +19,57 @@ NetFlip supports Python 3.10 and newer, with CI covering Python 3.10 through
 3.14. The local workflow is uv-first and uses the checked-in `uv.lock` file for
 reproducible installs.
 
+### Linux Server Setup
+
+If `uv` is not installed on a Linux server, install it first:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+If the server does not have `curl`, use `wget`:
+
+```bash
+wget -qO- https://astral.sh/uv/install.sh | sh
+```
+
+Restart the shell, or make sure the uv install directory is on `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+uv --version
+```
+
+Then set up NetFlip from a fresh clone:
+
+```bash
+cd netflip
+uv python install 3.14
+uv sync --extra benchmark
+```
+
+For CUDA servers, request CUDA explicitly so the command fails early if the GPU
+runtime is unavailable:
+
+```bash
+uv run netflip prepare-cifar10-resnet20 --download --device cuda
+uv run netflip run examples/cifar10_resnet20/bfa_pbs.yaml
+```
+
+For a quick server smoke test before full training:
+
+```bash
+uv run netflip prepare-cifar10-resnet20 \
+  --download \
+  --epochs 0 \
+  --train-sample-limit 128 \
+  --evaluation-sample-limit 128 \
+  --device cuda
+```
+
+Use `--device cpu` on CPU-only Linux servers. `--device auto` selects CUDA when
+available, then MPS, then CPU.
+
 ## Run
 
 Current CLI:

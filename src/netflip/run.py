@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -42,6 +42,8 @@ from netflip.soft_error import (
 from netflip.summary import build_run_summary, write_run_summary
 from netflip.trace import write_candidate_trace, write_perturbation_trace
 
+ProgressReporter = Callable[[str], None]
+
 
 @dataclass(frozen=True)
 class ExperimentRunOutput:
@@ -71,9 +73,15 @@ class UnsupportedBenchmarkError(ExperimentRunError):
     """Raised when ``netflip run`` cannot execute the configured benchmark."""
 
 
-def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutput:
+def execute_experiment_run(
+    spec_path: str | PathLike[str],
+    *,
+    progress: ProgressReporter | None = None,
+) -> ExperimentRunOutput:
     """Load and execute one supported Experiment Spec."""
     resolved_spec_path = Path(spec_path).resolve()
+    _report_progress(progress, "== Run Setup ==")
+    _report_progress(progress, f"  spec: {resolved_spec_path}")
     try:
         spec = load_experiment_spec(resolved_spec_path)
     except (OSError, ValueError) as exc:
@@ -96,8 +104,23 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
         device = str(resolve_torch_device(spec.device))
     except (RuntimeDeviceUnavailableError, ValueError) as exc:
         raise ExperimentRunError(str(exc)) from exc
+    _report_progress(progress, f"  device: {device}")
 
+    _report_progress(progress, "")
+    _report_progress(progress, "== Artifact ==")
+    _report_progress(progress, f"  checkpoint: {spec.model.checkpoint.path}")
+    _report_progress(
+        progress, f"  scale_metadata: {spec.model.quantization.scale_path}"
+    )
     artifact = _load_benchmark_artifact(spec)
+    _report_progress(progress, "  loaded: CIFAR-10 ResNet-20 quantized artifact")
+
+    _report_progress(progress, "")
+    _report_progress(progress, "== Dataset ==")
+    _report_progress(progress, f"  root: {spec.dataset.root}")
+    _report_progress(progress, f"  selection_split: {spec.dataset.selection_split}")
+    _report_progress(progress, f"  evaluation_split: {spec.dataset.evaluation_split}")
+    _report_progress(progress, f"  batch_size: {_dataloader_batch_size(spec)}")
     try:
         dataloaders = build_cifar10_dataloaders(
             root=spec.dataset.root,
@@ -110,6 +133,9 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
     except (OSError, ValueError, ModuleNotFoundError) as exc:
         raise ExperimentRunError(str(exc)) from exc
 
+    _report_progress(progress, "")
+    _report_progress(progress, "== Clean Baseline ==")
+    _report_progress(progress, "  evaluating...")
     try:
         clean_baseline_metrics = _classification_metrics(
             artifact.model,
@@ -118,6 +144,10 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
         )
     except TypeError as exc:
         raise ExperimentRunError(str(exc)) from exc
+    _report_progress(
+        progress,
+        f"  metrics: {_format_progress_metrics(clean_baseline_metrics)}",
+    )
 
     def metric_evaluator(adapter: ModelAdapter) -> Mapping[str, JSONScalar]:
         return _classification_metrics(
@@ -128,6 +158,8 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
 
     try:
         if spec.scenario.type == SOFT_ERROR_SCENARIO_TYPE:
+            _report_progress(progress, "")
+            _report_progress(progress, "== Soft Error ==")
             fault_budget = FaultBudget(
                 max_flip_count=spec.scenario.fault_budget.max_flip_count,
                 max_bit_flip_ratio=spec.scenario.fault_budget.max_bit_flip_ratio,
@@ -139,6 +171,17 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
                 rng_seed=spec.scenario.rng_seed,
             )
         else:
+            _report_progress(progress, "")
+            _report_progress(progress, "== BFA/PBS Attack ==")
+            _report_progress(progress, f"  objective: {spec.scenario.attack_objective}")
+            _report_progress(
+                progress, f"  target_policy: {spec.scenario.target_policy}"
+            )
+            _report_progress(progress, f"  rng_seed: {spec.scenario.rng_seed}")
+            _report_progress(
+                progress,
+                f"  selection_batch_size: {spec.scenario.selection_batch_size}",
+            )
             selection_batch = _first_selection_batch(dataloaders.selection)
 
             def objective_evaluator(adapter: ModelAdapter) -> float:
@@ -157,11 +200,15 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
                 max_flip_count=spec.scenario.max_flip_count,
                 rng_seed=spec.scenario.rng_seed,
                 record_candidate_trace=spec.scenario.emit_candidate_trace,
+                progress=progress,
             )
     except (TypeError, ValueError) as exc:
         raise ExperimentRunError(str(exc)) from exc
 
     output_dir = Path(spec.output_dir)
+    _report_progress(progress, "")
+    _report_progress(progress, "== Outputs ==")
+    _report_progress(progress, f"  output_dir: {output_dir}")
     try:
         perturbation_trace_path = write_perturbation_trace(
             run_result.perturbation_trace,
@@ -205,6 +252,29 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
         stopped_because=run_result.stopped_because,
         device=device,
     )
+
+
+def _report_progress(
+    progress: ProgressReporter | None,
+    message: str,
+) -> None:
+    if progress is not None:
+        progress(message)
+
+
+def _format_progress_metrics(metrics: Mapping[str, JSONScalar]) -> str:
+    return " ".join(
+        f"{metric_name}={_format_progress_metric_value(metric_value)}"
+        for metric_name, metric_value in sorted(metrics.items())
+    )
+
+
+def _format_progress_metric_value(value: JSONScalar) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        return f"{value:.6g}"
+    return str(value)
 
 
 def _load_benchmark_artifact(spec: ExperimentSpec) -> Any:

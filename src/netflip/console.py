@@ -37,10 +37,12 @@ def main(ctx: click.Context) -> None:
 def run(spec: str) -> None:
     """Run an experiment spec."""
     try:
-        output = execute_experiment_run(spec)
+        output = execute_experiment_run(spec, progress=_echo_progress)
     except ExperimentRunError as exc:
         raise click.ClickException(str(exc)) from exc
 
+    click.echo()
+    click.echo("== Run Summary ==")
     click.echo(f"Run output directory: {output.output_dir}")
     click.echo(f"Manifest: {output.manifest_path}")
     click.echo(f"Perturbation trace: {output.perturbation_trace_path}")
