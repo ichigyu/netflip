@@ -48,6 +48,33 @@ def test_build_cifar_resnet20_requires_pytorch_when_missing(
         build_cifar_resnet20()
 
 
+def test_build_cifar_resnet20_constructs_model_with_lazy_pytorch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    fake_torch = object()
+    built_configs: list[ResNet20Config] = []
+
+    def fake_make_cifar_resnet(config: ResNet20Config, torch: Any) -> str:
+        assert torch is fake_torch
+        built_configs.append(config)
+        return "fake-model"
+
+    monkeypatch.setattr(cifar_resnet20, "_require_pytorch", lambda: fake_torch)
+    monkeypatch.setattr(cifar_resnet20, "_make_cifar_resnet", fake_make_cifar_resnet)
+
+    model = build_cifar_resnet20(num_classes=7, input_channels=1)
+
+    assert model == "fake-model"
+    assert built_configs == [
+        ResNet20Config(
+            input_channels=1,
+            num_classes=7,
+        )
+    ]
+
+
 def test_build_cifar_resnet20_forward_pass_smoke() -> None:
     torch = pytest.importorskip("torch")
 
@@ -102,6 +129,62 @@ def test_build_cifar10_dataset_rejects_unknown_role(tmp_path: Any) -> None:
                 split="train",
             )
         )
+
+
+def test_build_cifar10_dataset_rejects_invalid_split(tmp_path: Any) -> None:
+    with pytest.raises(ValueError, match="split must be one"):
+        build_cifar10_dataset(
+            Cifar10DatasetRequest(
+                role=Cifar10DatasetRole.SELECTION,
+                root=tmp_path,
+                split="validation",  # type: ignore[arg-type]
+            )
+        )
+
+
+def test_build_cifar10_dataset_rejects_negative_sample_limit(tmp_path: Any) -> None:
+    with pytest.raises(ValueError, match="selection sample_limit"):
+        build_cifar10_dataset(
+            Cifar10DatasetRequest(
+                role=Cifar10DatasetRole.SELECTION,
+                root=tmp_path,
+                split="train",
+                sample_limit=-1,
+            )
+        )
+
+
+def test_build_cifar10_dataset_without_sample_limit_returns_raw_dataset(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    class FakeCifar10Dataset:
+        pass
+
+    fake_dataset = FakeCifar10Dataset()
+
+    def fake_cifar10(**kwargs: Any) -> FakeCifar10Dataset:
+        return fake_dataset
+
+    fake_torchvision = SimpleNamespace(
+        datasets=SimpleNamespace(CIFAR10=fake_cifar10),
+        transforms=_fake_cifar10_transforms(),
+    )
+    monkeypatch.setattr(
+        cifar_resnet20, "_require_torchvision", lambda: fake_torchvision
+    )
+
+    dataset = build_cifar10_dataset(
+        Cifar10DatasetRequest(
+            role=Cifar10DatasetRole.EVALUATION,
+            root=tmp_path,
+            split="test",
+        )
+    )
+
+    assert dataset is fake_dataset
 
 
 def test_build_cifar10_dataloaders_use_splits_and_sample_limits(
@@ -212,6 +295,23 @@ def test_build_cifar10_dataloaders_use_splits_and_sample_limits(
     assert normalize.std == CIFAR10_NORMALIZATION_STD
 
 
+def test_cifar10_evaluation_transform_uses_standard_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    fake_torchvision = SimpleNamespace(transforms=_fake_cifar10_transforms())
+    monkeypatch.setattr(
+        cifar_resnet20, "_require_torchvision", lambda: fake_torchvision
+    )
+
+    transform = cifar_resnet20.cifar10_evaluation_transform()
+
+    normalize = transform[1]
+    assert normalize.mean == CIFAR10_NORMALIZATION_MEAN
+    assert normalize.std == CIFAR10_NORMALIZATION_STD
+
+
 def test_build_cifar10_dataloader_rejects_invalid_batch_size(tmp_path: Any) -> None:
     with pytest.raises(ValueError, match="batch_size"):
         build_cifar10_dataloader(
@@ -278,6 +378,114 @@ def test_build_cifar10_dataset_preserves_unexpected_runtime_errors(
                 split="test",
             )
         )
+
+
+def test_metric_wrappers_use_pytorch_runtime_without_real_torch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    class FakeScalar:
+        def __init__(self, value: float) -> None:
+            self.value = value
+
+        def item(self) -> float:
+            return self.value
+
+    class FakeComparison:
+        def __init__(self, correct: int) -> None:
+            self.correct = correct
+
+        def sum(self) -> FakeScalar:
+            return FakeScalar(self.correct)
+
+    class FakePredictions:
+        def __init__(self, correct: int) -> None:
+            self.correct = correct
+
+        def __eq__(self, other: object) -> Any:
+            return FakeComparison(self.correct)
+
+    class FakeOutputs:
+        def __init__(self, correct: int, loss: float) -> None:
+            self.correct = correct
+            self.loss = loss
+
+        def argmax(self, *, dim: int) -> FakePredictions:
+            assert dim == 1
+            return FakePredictions(self.correct)
+
+    class FakeInputs:
+        def __init__(self, outputs: FakeOutputs) -> None:
+            self.outputs = outputs
+            self.device = None
+
+        def to(self, device: str) -> FakeInputs:
+            self.device = device
+            return self
+
+    class FakeTargets:
+        shape = (2,)
+
+        def __init__(self) -> None:
+            self.device = None
+
+        def to(self, device: str) -> FakeTargets:
+            self.device = device
+            return self
+
+    class FakeNoGrad:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeFunctional:
+        @staticmethod
+        def cross_entropy(
+            outputs: FakeOutputs,
+            targets: FakeTargets,
+            *,
+            reduction: str,
+        ) -> FakeScalar:
+            assert reduction == "sum"
+            return FakeScalar(outputs.loss)
+
+    class FakeModel:
+        training = True
+
+        def __init__(self) -> None:
+            self.device = None
+
+        def to(self, device: str) -> None:
+            self.device = device
+
+        def eval(self) -> None:
+            self.training = False
+
+        def train(self) -> None:
+            self.training = True
+
+        def __call__(self, inputs: FakeInputs) -> FakeOutputs:
+            return inputs.outputs
+
+    fake_torch = SimpleNamespace(
+        no_grad=FakeNoGrad,
+        nn=SimpleNamespace(functional=FakeFunctional),
+    )
+    monkeypatch.setattr(cifar_resnet20, "_require_pytorch", lambda: fake_torch)
+
+    dataloader = [
+        (FakeInputs(FakeOutputs(correct=2, loss=1.0)), FakeTargets()),
+        (FakeInputs(FakeOutputs(correct=1, loss=3.0)), FakeTargets()),
+    ]
+    model = FakeModel()
+
+    assert compute_top1_accuracy(model, dataloader, device="cpu") == pytest.approx(0.75)
+    assert model.training is True
+    assert model.device == "cpu"
+    assert compute_cross_entropy_loss(model, dataloader) == pytest.approx(1.0)
 
 
 def test_classification_metric_helpers_compute_accuracy_and_cross_entropy() -> None:
