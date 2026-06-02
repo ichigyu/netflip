@@ -7,8 +7,10 @@ import pytest
 from pydantic import ValidationError
 
 from netflip.trace import (
+    CandidateTraceEntry,
     PerturbationTraceEntry,
     candidate_trace_path,
+    write_candidate_trace,
     write_perturbation_trace,
 )
 
@@ -112,3 +114,37 @@ def test_candidate_trace_path_reserves_feature_gated_output_path(
     tmp_path: Path,
 ) -> None:
     assert candidate_trace_path(tmp_path) == tmp_path / "candidate_trace.jsonl"
+
+
+def test_write_candidate_trace_emits_one_candidate_bit_flip_per_line(
+    tmp_path: Path,
+) -> None:
+    entry = CandidateTraceEntry(
+        step_index=0,
+        scenario_type="attack",
+        strategy_name="bfa-pbs",
+        artifact_kind="model_state_bits",
+        population_ordinal=7,
+        tensor_name="layer1.weight",
+        tensor_index=(0, 1),
+        representation="signed-int8-two-complement",
+        bit_index=7,
+        bit_role="sign_msb",
+        value_before=0,
+        value_after=-128,
+        objective_before=0.5,
+        objective_after=4.25,
+        selection_score=3.75,
+        rng_seed=2026,
+        layer_name="layer1",
+        eligible_bit_population=128,
+    )
+
+    trace_path = write_candidate_trace([entry], tmp_path)
+
+    assert trace_path == tmp_path / "candidate_trace.jsonl"
+    lines = trace_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    written = json.loads(lines[0])
+    assert written["population_ordinal"] == 7
+    assert written["selection_score"] == 3.75

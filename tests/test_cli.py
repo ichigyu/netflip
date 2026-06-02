@@ -197,7 +197,7 @@ def test_cli_run_soft_error_spec_writes_manifest_and_trace(
     assert json.loads(trace_lines[0])["scenario_type"] == "soft_error"
 
 
-def test_cli_run_unsupported_scenario_type_fails_clearly(tmp_path: Path) -> None:
+def test_cli_run_unsupported_attack_objective_fails_clearly(tmp_path: Path) -> None:
     spec_path = tmp_path / "attack.yaml"
     spec_path.write_text(
         f"""
@@ -235,7 +235,7 @@ def test_cli_run_unsupported_scenario_type_fails_clearly(tmp_path: Path) -> None
     result = runner.invoke(main, ["run", str(spec_path)])
 
     assert result.exit_code == 1
-    assert "unsupported scenario type 'attack'" in result.stderr
+    assert "unsupported BFA/PBS attack_objective 'maximize-loss'" in result.stderr
 
 
 def test_cli_run_allows_unexpected_errors_to_propagate(

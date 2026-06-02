@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 import netflip.run as run_module
+from netflip import PyTorchModelAdapter
 from netflip.run import ExperimentRunError, UnsupportedBenchmarkError
 
 
@@ -55,10 +56,87 @@ def _write_soft_error_spec(tmp_path: Path, *, include_scale_path: bool = True) -
     return spec_path
 
 
+def _write_attack_spec(tmp_path: Path, *, emit_candidate_trace: bool = False) -> Path:
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    scale_path = tmp_path / "scales.json"
+    scale_path.write_text("{}", encoding="utf-8")
+    spec_path = tmp_path / "attack.yaml"
+    spec = {
+        "schema_version": "2026.1",
+        "run_id": "run-attack",
+        "device": "cpu",
+        "model": {
+            "benchmark": "cifar10-resnet20",
+            "architecture": "resnet20",
+            "num_classes": 2,
+            "checkpoint": {
+                "path": str(checkpoint_path),
+                "format": "pytorch-state-dict",
+            },
+            "quantization": {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-tensor",
+                "scale_path": str(scale_path),
+            },
+        },
+        "dataset": {
+            "name": "cifar10",
+            "root": str(tmp_path / "data"),
+            "selection_split": "train",
+            "evaluation_split": "test",
+        },
+        "scenario": {
+            "type": "attack",
+            "strategy_name": "bfa-pbs",
+            "attack_objective": "maximize-cross-entropy",
+            "target_policy": "ground-truth",
+            "max_flip_count": 1,
+            "selection_batch_size": 3,
+            "rng_seed": 2026,
+            "emit_candidate_trace": emit_candidate_trace,
+        },
+        "output_dir": str(tmp_path / "run-output"),
+    }
+    spec_path.write_text(run_module.json.dumps(spec), encoding="utf-8")
+    return spec_path
+
+
 def _fake_artifact(tmp_path: Path) -> Any:
     return SimpleNamespace(
         model=object(),
         adapter=SimpleNamespace(model="adapter-model"),
+        checkpoint_path=tmp_path / "checkpoint.pt",
+        scale_path=tmp_path / "scales.json",
+        quantization=SimpleNamespace(
+            codec="signed-int8-two-complement",
+            scale_granularity="per-tensor",
+            tensors={"features.weight": object()},
+        ),
+    )
+
+
+def _fake_tiny_torch_artifact(tmp_path: Path, torch_module: Any) -> Any:
+    class TinyInt8Classifier(torch_module.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.features = torch_module.nn.Linear(1, 1, bias=False)
+            self.features.weight = torch_module.nn.Parameter(
+                torch_module.tensor([[0]], dtype=torch_module.int8),
+                requires_grad=False,
+            )
+
+        def forward(self, inputs: Any) -> Any:
+            target_logit = inputs @ self.features.weight.t().float()
+            return torch_module.cat(
+                [torch_module.zeros_like(target_logit), target_logit],
+                dim=1,
+            )
+
+    model = TinyInt8Classifier()
+    return SimpleNamespace(
+        model=model,
+        adapter=PyTorchModelAdapter(model),
         checkpoint_path=tmp_path / "checkpoint.pt",
         scale_path=tmp_path / "scales.json",
         quantization=SimpleNamespace(
@@ -229,6 +307,58 @@ def test_load_benchmark_artifact_requires_scale_path(tmp_path: Path) -> None:
 
     with pytest.raises(ExperimentRunError, match="scale_path"):
         run_module._load_benchmark_artifact(spec)
+
+
+def test_execute_experiment_run_supports_tiny_bfa_pbs_attack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch_module = pytest.importorskip("torch")
+    spec_path = _write_attack_spec(tmp_path, emit_candidate_trace=True)
+    artifact = _fake_tiny_torch_artifact(tmp_path, torch_module)
+    dataloader_calls: list[dict[str, Any]] = []
+    selection_batch = (
+        torch_module.ones(3, 1),
+        torch_module.ones(3, dtype=torch_module.long),
+    )
+
+    def fake_dataloaders(**kwargs: Any) -> SimpleNamespace:
+        dataloader_calls.append(kwargs)
+        return SimpleNamespace(selection=[selection_batch], evaluation=["eval"])
+
+    def fake_metrics(model: Any, dataloader: Any, *, device: str) -> dict[str, int]:
+        return {"weight_sum": int(model.features.weight.sum().item())}
+
+    monkeypatch.setattr(run_module, "resolve_torch_device", lambda requested: "cpu")
+    monkeypatch.setattr(run_module, "_load_benchmark_artifact", lambda spec: artifact)
+    monkeypatch.setattr(run_module, "build_cifar10_dataloaders", fake_dataloaders)
+    monkeypatch.setattr(
+        run_module,
+        "evaluate_classification_metrics",
+        fake_metrics,
+    )
+
+    output = run_module.execute_experiment_run(spec_path)
+
+    assert dataloader_calls[0]["batch_size"] == 3
+    assert output.flip_count == 1
+    assert output.stopped_because == "attack_budget"
+    candidate_trace_path = output.candidate_trace_path
+    assert candidate_trace_path is not None
+    assert candidate_trace_path == tmp_path / "run-output" / "candidate_trace.jsonl"
+    trace_lines = output.perturbation_trace_path.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    candidate_lines = candidate_trace_path.read_text(encoding="utf-8").splitlines()
+    trace_entry = run_module.json.loads(trace_lines[0])
+    assert trace_entry["scenario_type"] == "attack"
+    assert trace_entry["strategy_name"] == "bfa-pbs"
+    assert trace_entry["bit_index"] == 7
+    assert trace_entry["value_before"] == 0
+    assert trace_entry["value_after"] == -128
+    assert trace_entry["metric_before"] == {"weight_sum": 0}
+    assert trace_entry["metric_after"] == {"weight_sum": -128}
+    assert len(candidate_lines) == 8
 
 
 def test_load_benchmark_artifact_wraps_loader_errors(

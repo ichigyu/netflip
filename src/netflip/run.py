@@ -20,6 +20,11 @@ from netflip.benchmarks import (
     evaluate_classification_metrics,
     load_cifar_resnet20_quantized_artifact,
 )
+from netflip.bfa_pbs import (
+    ATTACK_SCENARIO_TYPE,
+    run_bfa_pbs_attack_strategy,
+    validate_bfa_pbs_scenario_config,
+)
 from netflip.experiment_spec import ExperimentSpec, load_experiment_spec
 from netflip.manifest import (
     OUTPUT_SCHEMA_VERSION,
@@ -35,7 +40,7 @@ from netflip.soft_error import (
     run_uniform_random_soft_error_baseline,
 )
 from netflip.summary import build_run_summary, write_run_summary
-from netflip.trace import write_perturbation_trace
+from netflip.trace import write_candidate_trace, write_perturbation_trace
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,7 @@ class ExperimentRunOutput:
     output_dir: Path
     manifest_path: Path
     perturbation_trace_path: Path
+    candidate_trace_path: Path | None
     summary_json_path: Path
     summary_csv_path: Path
     clean_baseline_metrics: Mapping[str, JSONScalar]
@@ -74,12 +80,17 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
         msg = f"failed to load Experiment Spec {resolved_spec_path}: {exc}"
         raise ExperimentRunError(msg) from exc
 
-    if spec.scenario.type != SOFT_ERROR_SCENARIO_TYPE:
-        msg = (
-            f"unsupported scenario type {spec.scenario.type!r}; "
-            "netflip run currently supports only 'soft_error'"
-        )
+    if spec.scenario.type not in {SOFT_ERROR_SCENARIO_TYPE, ATTACK_SCENARIO_TYPE}:
+        msg = f"unsupported scenario type {spec.scenario.type!r}"
         raise UnsupportedScenarioError(msg)
+    if spec.scenario.type == ATTACK_SCENARIO_TYPE:
+        try:
+            validate_bfa_pbs_scenario_config(
+                attack_objective=spec.scenario.attack_objective,
+                target_policy=spec.scenario.target_policy,
+            )
+        except ValueError as exc:
+            raise ExperimentRunError(str(exc)) from exc
 
     try:
         device = str(resolve_torch_device(spec.device))
@@ -92,6 +103,7 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
             root=spec.dataset.root,
             selection_split=spec.dataset.selection_split,
             evaluation_split=spec.dataset.evaluation_split,
+            batch_size=_dataloader_batch_size(spec),
             selection_sample_limit=spec.dataset.selection_sample_limit,
             evaluation_sample_limit=spec.dataset.evaluation_sample_limit,
         )
@@ -115,16 +127,37 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
         )
 
     try:
-        fault_budget = FaultBudget(
-            max_flip_count=spec.scenario.fault_budget.max_flip_count,
-            max_bit_flip_ratio=spec.scenario.fault_budget.max_bit_flip_ratio,
-        )
-        run_result = run_uniform_random_soft_error_baseline(
-            adapter=artifact.adapter,
-            metric_evaluator=metric_evaluator,
-            fault_budget=fault_budget,
-            rng_seed=spec.scenario.rng_seed,
-        )
+        if spec.scenario.type == SOFT_ERROR_SCENARIO_TYPE:
+            fault_budget = FaultBudget(
+                max_flip_count=spec.scenario.fault_budget.max_flip_count,
+                max_bit_flip_ratio=spec.scenario.fault_budget.max_bit_flip_ratio,
+            )
+            run_result = run_uniform_random_soft_error_baseline(
+                adapter=artifact.adapter,
+                metric_evaluator=metric_evaluator,
+                fault_budget=fault_budget,
+                rng_seed=spec.scenario.rng_seed,
+            )
+        else:
+            selection_batch = _first_selection_batch(dataloaders.selection)
+
+            def objective_evaluator(adapter: ModelAdapter) -> float:
+                return _classification_cross_entropy(
+                    _adapter_model(adapter, fallback=artifact.model),
+                    selection_batch,
+                    device=device,
+                )
+
+            run_result = run_bfa_pbs_attack_strategy(
+                adapter=artifact.adapter,
+                objective_evaluator=objective_evaluator,
+                metric_evaluator=metric_evaluator,
+                attack_objective=spec.scenario.attack_objective,
+                target_policy=spec.scenario.target_policy,
+                max_flip_count=spec.scenario.max_flip_count,
+                rng_seed=spec.scenario.rng_seed,
+                record_candidate_trace=spec.scenario.emit_candidate_trace,
+            )
     except (TypeError, ValueError) as exc:
         raise ExperimentRunError(str(exc)) from exc
 
@@ -134,6 +167,13 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
             run_result.perturbation_trace,
             output_dir,
         )
+        candidate_trace_output_path = None
+        candidate_trace = getattr(run_result, "candidate_trace", ())
+        if candidate_trace:
+            candidate_trace_output_path = write_candidate_trace(
+                candidate_trace,
+                output_dir,
+            )
         summary = build_run_summary(
             clean_metrics=clean_baseline_metrics,
             perturbation_trace=run_result.perturbation_trace,
@@ -157,6 +197,7 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
         output_dir=output_dir,
         manifest_path=manifest_path,
         perturbation_trace_path=perturbation_trace_path,
+        candidate_trace_path=candidate_trace_output_path,
         summary_json_path=summary_json_path,
         summary_csv_path=summary_csv_path,
         clean_baseline_metrics=clean_baseline_metrics,
@@ -178,7 +219,7 @@ def _load_benchmark_artifact(spec: ExperimentSpec) -> Any:
         )
         raise UnsupportedBenchmarkError(msg)
     if spec.model.quantization.scale_path is None:
-        msg = "soft-error CIFAR-10 ResNet-20 runs require model.quantization.scale_path"
+        msg = "CIFAR-10 ResNet-20 runs require model.quantization.scale_path"
         raise ExperimentRunError(msg)
     try:
         return load_cifar_resnet20_quantized_artifact(
@@ -200,6 +241,65 @@ def _classification_metrics(
         evaluate_classification_metrics(model, dataloader, device=device),
         context="classification metrics",
     )
+
+
+def _classification_cross_entropy(
+    model: Any,
+    batch: Any,
+    *,
+    device: str,
+) -> float:
+    try:
+        import torch  # type: ignore[import-untyped]
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on environment
+        msg = "classification attack objective requires PyTorch to be installed"
+        raise ModuleNotFoundError(msg) from exc
+
+    try:
+        inputs, targets = batch
+    except (TypeError, ValueError) as exc:
+        msg = "selection batch must contain inputs and ground-truth targets"
+        raise TypeError(msg) from exc
+
+    move_model = getattr(model, "to", None)
+    if device is not None and move_model is not None:
+        move_model(device)
+    if device is not None:
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+
+    was_training = getattr(model, "training", False)
+    set_eval = getattr(model, "eval", None)
+    if set_eval is not None:
+        set_eval()
+    try:
+        with torch.no_grad():
+            outputs = model(inputs)
+            loss = torch.nn.functional.cross_entropy(
+                outputs,
+                targets,
+                reduction="mean",
+            )
+    finally:
+        set_train = getattr(model, "train", None)
+        if was_training and set_train is not None:
+            set_train()
+
+    return float(loss.item())
+
+
+def _first_selection_batch(dataloader: Any) -> Any:
+    try:
+        return next(iter(dataloader))
+    except StopIteration as exc:
+        msg = "selection batch requires at least one sample"
+        raise ValueError(msg) from exc
+
+
+def _dataloader_batch_size(spec: ExperimentSpec) -> int:
+    if spec.scenario.type == ATTACK_SCENARIO_TYPE:
+        return spec.scenario.selection_batch_size
+    return 128
 
 
 def _adapter_model(adapter: ModelAdapter, *, fallback: Any) -> Any:
