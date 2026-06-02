@@ -109,6 +109,20 @@ def test_explicit_cpu_resolves_without_importing_torch(
     assert resolve_torch_device("cpu") == "cpu"
 
 
+def test_unsupported_device_request_fails_without_importing_torch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.runtime_device as runtime_device
+
+    def forbidden_import(name: str) -> Any:
+        raise AssertionError(f"unexpected import: {name}")
+
+    monkeypatch.setattr(runtime_device, "import_module", forbidden_import)
+
+    with pytest.raises(ValueError, match="unsupported PyTorch device request"):
+        resolve_torch_device("tpu")
+
+
 def test_explicit_cuda_fails_when_cuda_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
