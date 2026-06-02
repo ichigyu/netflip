@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Any
+from typing import Any, Protocol
 
 CIFAR_RESNET20_BENCHMARK_ID = "cifar10-resnet20"
 CIFAR10_CLASSES = 10
@@ -25,11 +25,28 @@ class ResNet20Config:
         return 6 * self.blocks_per_stage + 2
 
 
+class TorchModule(Protocol):
+    """Minimal structural type for lazily imported PyTorch modules."""
+
+    training: bool
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Run the module."""
+        ...
+
+
+class CifarResNet20Model(TorchModule, Protocol):
+    """Structural return type for the CIFAR-10 ResNet-20 benchmark model."""
+
+    benchmark_id: str
+    config: ResNet20Config
+
+
 def build_cifar_resnet20(
     *,
     num_classes: int = CIFAR10_CLASSES,
     input_channels: int = 3,
-) -> Any:
+) -> CifarResNet20Model:
     """Construct the CIFAR-10 ResNet-20 benchmark model.
 
     PyTorch is intentionally optional for NetFlip's core package. This
@@ -41,55 +58,7 @@ def build_cifar_resnet20(
         input_channels=input_channels,
         num_classes=num_classes,
     )
-    return _CifarResNet(config, torch)
-
-
-class _BasicBlock:
-    expansion = 1
-
-    def __new__(cls, config: _BlockConfig, torch: Any) -> Any:
-        nn = torch.nn
-
-        class BasicBlock(nn.Module):
-            expansion = cls.expansion
-
-            def __init__(self) -> None:
-                super().__init__()
-                self.conv1 = _conv3x3(
-                    config.in_channels,
-                    config.out_channels,
-                    stride=config.stride,
-                    torch=torch,
-                )
-                self.bn1 = nn.BatchNorm2d(config.out_channels)
-                self.relu = nn.ReLU(inplace=True)
-                self.conv2 = _conv3x3(
-                    config.out_channels,
-                    config.out_channels,
-                    torch=torch,
-                )
-                self.bn2 = nn.BatchNorm2d(config.out_channels)
-                if config.stride != 1 or config.in_channels != config.out_channels:
-                    self.shortcut = nn.Sequential(
-                        nn.Conv2d(
-                            config.in_channels,
-                            config.out_channels,
-                            kernel_size=1,
-                            stride=config.stride,
-                            bias=False,
-                        ),
-                        nn.BatchNorm2d(config.out_channels),
-                    )
-                else:
-                    self.shortcut = nn.Identity()
-
-            def forward(self, inputs: Any) -> Any:
-                residual = self.shortcut(inputs)
-                outputs = self.relu(self.bn1(self.conv1(inputs)))
-                outputs = self.bn2(self.conv2(outputs))
-                return self.relu(outputs + residual)
-
-        return BasicBlock()
+    return _make_cifar_resnet(config, torch)
 
 
 @dataclass(frozen=True)
@@ -99,7 +68,52 @@ class _BlockConfig:
     stride: int = 1
 
 
-def _CifarResNet(config: ResNet20Config, torch: Any) -> Any:
+def _make_basic_block(config: _BlockConfig, torch: Any) -> TorchModule:
+    nn = torch.nn
+
+    class BasicBlock(nn.Module):
+        expansion = 1
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.conv1 = _conv3x3(
+                config.in_channels,
+                config.out_channels,
+                stride=config.stride,
+                torch=torch,
+            )
+            self.bn1 = nn.BatchNorm2d(config.out_channels)
+            self.relu = nn.ReLU(inplace=True)
+            self.conv2 = _conv3x3(
+                config.out_channels,
+                config.out_channels,
+                torch=torch,
+            )
+            self.bn2 = nn.BatchNorm2d(config.out_channels)
+            if config.stride != 1 or config.in_channels != config.out_channels:
+                self.shortcut = nn.Sequential(
+                    nn.Conv2d(
+                        config.in_channels,
+                        config.out_channels,
+                        kernel_size=1,
+                        stride=config.stride,
+                        bias=False,
+                    ),
+                    nn.BatchNorm2d(config.out_channels),
+                )
+            else:
+                self.shortcut = nn.Identity()
+
+        def forward(self, inputs: Any) -> Any:
+            residual = self.shortcut(inputs)
+            outputs = self.relu(self.bn1(self.conv1(inputs)))
+            outputs = self.bn2(self.conv2(outputs))
+            return self.relu(outputs + residual)
+
+    return BasicBlock()
+
+
+def _make_cifar_resnet(config: ResNet20Config, torch: Any) -> CifarResNet20Model:
     nn = torch.nn
 
     class CifarResNet20(nn.Module):
@@ -123,9 +137,9 @@ def _CifarResNet(config: ResNet20Config, torch: Any) -> Any:
             self.fc = nn.Linear(config.base_channels * 4, config.num_classes)
             self._initialize_weights()
 
-        def _make_stage(self, out_channels: int, *, stride: int) -> Any:
+        def _make_stage(self, out_channels: int, *, stride: int) -> TorchModule:
             blocks = [
-                _BasicBlock(
+                _make_basic_block(
                     _BlockConfig(
                         in_channels=self.in_channels,
                         out_channels=out_channels,
@@ -137,7 +151,7 @@ def _CifarResNet(config: ResNet20Config, torch: Any) -> Any:
             self.in_channels = out_channels
             for _ in range(1, config.blocks_per_stage):
                 blocks.append(
-                    _BasicBlock(
+                    _make_basic_block(
                         _BlockConfig(
                             in_channels=self.in_channels,
                             out_channels=out_channels,
@@ -177,7 +191,7 @@ def _conv3x3(
     *,
     stride: int = 1,
     torch: Any,
-) -> Any:
+) -> TorchModule:
     return torch.nn.Conv2d(
         in_channels,
         out_channels,

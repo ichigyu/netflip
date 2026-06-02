@@ -39,7 +39,7 @@ Checkpoint Preparation
 ----------------------
 
 The benchmark expects a CIFAR-10 ResNet-20 checkpoint whose persistent model
-state is compatible with BFA-compatible int8 quantization:
+state uses BFA-compatible int8 quantization:
 
 1. Train or obtain a CIFAR-10 ResNet-20 model outside NetFlip.
 2. Quantize weights to signed int8 two's-complement values with per-tensor

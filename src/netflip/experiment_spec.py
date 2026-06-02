@@ -135,6 +135,12 @@ def _load_yaml_mapping(text: str) -> Mapping[str, Any]:
 
 
 def _load_simple_yaml_mapping(text: str) -> dict[str, Any]:
+    """Load the small YAML subset supported without PyYAML.
+
+    The fallback parser intentionally supports only nested mappings and scalar
+    values. Install PyYAML when Experiment Specs need sequences, anchors, tags,
+    or other YAML features outside the subset used by NetFlip's examples.
+    """
     try:
         loaded = json.loads(text)
     except json.JSONDecodeError:
@@ -160,6 +166,12 @@ def _parse_indented_mapping(text: str) -> dict[str, Any]:
 
         indent = len(raw_line) - len(raw_line.lstrip(" "))
         stripped = raw_line.strip()
+        if stripped.startswith("-"):
+            msg = (
+                "fallback YAML parser does not support sequences; "
+                "install PyYAML for full YAML support"
+            )
+            raise ValueError(msg)
         key, separator, raw_value = stripped.partition(":")
         if not separator or not key.strip():
             msg = f"expected 'key: value' YAML mapping entry at line {line_number}"

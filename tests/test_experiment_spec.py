@@ -54,3 +54,15 @@ def test_spec_rejects_missing_configurable_checkpoint_path() -> None:
             output_dir: runs/missing-checkpoint
             """
         )
+
+
+def test_fallback_yaml_parser_reports_unsupported_sequences() -> None:
+    with pytest.raises(ValueError, match="does not support sequences"):
+        parse_experiment_spec(
+            """
+            schema_version: "2026.1"
+            run_id: unsupported-list
+            tags:
+              - cifar10
+            """
+        )
