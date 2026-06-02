@@ -214,6 +214,12 @@ def run_bfa_pbs_attack_strategy(
     seed = _validate_int(rng_seed, "rng_seed")
     selected_codec = codec if codec is not None else SignedInt8TwoComplementCodec()
     population = EligibleBitPopulation.from_model_adapter(adapter)
+    if population.size == 0:
+        return BfaPbsRunResult(
+            perturbation_trace=(),
+            stopped_because=ELIGIBLE_BITS_EXHAUSTED_STOP_REASON,
+            eligible_bit_population=0,
+        )
     committed_ordinals: set[int] = set()
     entries: list[PerturbationTraceEntry] = []
     candidate_entries: list[CandidateTraceEntry] = []

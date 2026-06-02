@@ -6,12 +6,15 @@ from typing import Any
 
 import pytest
 
+import netflip.bfa_pbs as bfa_pbs_module
 from netflip import (
     ATTACK_BUDGET_STOP_REASON,
+    ELIGIBLE_BITS_EXHAUSTED_STOP_REASON,
     GROUND_TRUTH_TARGET_POLICY,
     MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
     NO_IMPROVING_CANDIDATE_STOP_REASON,
     BfaPbsCandidateScore,
+    BfaPbsRunResult,
     ModelAdapter,
     PerturbableTensor,
     run_bfa_pbs_attack_strategy,
@@ -69,6 +72,10 @@ class _TinyInt8Adapter:
 
     def classify(self, *args: Any, **kwargs: Any) -> list[int]:
         return self.values
+
+
+class _EmptyEligibleBitPopulation:
+    size = 0
 
 
 def _sum_objective(adapter: ModelAdapter) -> float:
@@ -221,8 +228,6 @@ def test_attack_run_rejects_invalid_objective_return_types(
 
 
 def test_run_result_bit_flip_ratio_handles_empty_population() -> None:
-    from netflip import BfaPbsRunResult
-
     result = BfaPbsRunResult(
         perturbation_trace=(),
         stopped_because=ATTACK_BUDGET_STOP_REASON,
@@ -230,6 +235,33 @@ def test_run_result_bit_flip_ratio_handles_empty_population() -> None:
     )
 
     assert result.bit_flip_ratio == 0
+
+
+def test_attack_run_stops_clearly_for_empty_eligible_bit_population(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _TinyInt8Adapter([0])
+    monkeypatch.setattr(
+        bfa_pbs_module.EligibleBitPopulation,
+        "from_model_adapter",
+        lambda adapter: _EmptyEligibleBitPopulation(),
+    )
+
+    result = run_bfa_pbs_attack_strategy(
+        adapter=adapter,
+        objective_evaluator=_sum_objective,
+        metric_evaluator=_sum_metric,
+        attack_objective=MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
+        target_policy=GROUND_TRUTH_TARGET_POLICY,
+        max_flip_count=1,
+        rng_seed=2026,
+    )
+
+    assert result.stopped_because == ELIGIBLE_BITS_EXHAUSTED_STOP_REASON
+    assert result.flip_count == 0
+    assert result.eligible_bit_population == 0
+    assert result.bit_flip_ratio == 0
+    assert adapter.evaluation_depth == 0
 
 
 def test_candidate_scoring_rejects_invalid_excluded_ordinals() -> None:
