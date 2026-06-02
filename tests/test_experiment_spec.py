@@ -32,6 +32,40 @@ def test_bfa_pbs_example_spec_parses() -> None:
     assert spec.scenario.selection_batch_size == 128
 
 
+def test_spec_accepts_dataset_sample_limits() -> None:
+    spec = parse_experiment_spec(
+        """
+        schema_version: "2026.1"
+        run_id: small-validation
+        model:
+          benchmark: cifar10-resnet20
+          architecture: resnet20
+          num_classes: 10
+          checkpoint:
+            path: checkpoints/cifar10/resnet20-int8.pt
+            format: pytorch-state-dict
+          quantization:
+            codec: signed-int8-two-complement
+        dataset:
+          name: cifar10
+          root: data/cifar10
+          selection_split: train
+          evaluation_split: test
+          selection_sample_limit: 64
+          evaluation_sample_limit: 128
+        scenario:
+          type: soft_error
+          fault_budget:
+            max_flip_count: 1
+          rng_seed: 1
+        output_dir: runs/small-validation
+        """
+    )
+
+    assert spec.dataset.selection_sample_limit == 64
+    assert spec.dataset.evaluation_sample_limit == 128
+
+
 def test_spec_rejects_invalid_schema_version() -> None:
     with pytest.raises(ValidationError, match="schema_version"):
         parse_experiment_spec(

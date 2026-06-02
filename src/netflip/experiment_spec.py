@@ -49,14 +49,16 @@ class BenchmarkModelSpec(BaseModel):
 
 
 class DatasetSpec(BaseModel):
-    """Configurable Evaluation Dataset paths for CIFAR-10 benchmark runs."""
+    """Configurable Dataset paths and roles for CIFAR-10 benchmark runs."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: Literal["cifar10"] = "cifar10"
     root: str = Field(min_length=1)
-    selection_split: str = Field(default="train", min_length=1)
-    evaluation_split: str = Field(default="test", min_length=1)
+    selection_split: Literal["train", "test"] = "train"
+    evaluation_split: Literal["train", "test"] = "test"
+    selection_sample_limit: int | None = Field(default=None, ge=0)
+    evaluation_sample_limit: int | None = Field(default=None, ge=0)
 
 
 class FaultBudgetSpec(BaseModel):
