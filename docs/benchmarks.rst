@@ -35,6 +35,11 @@ Both example specs expose the paths that vary across local machines:
    Path to per-tensor scale metadata used with the Signed Integer Two's
    Complement Codec.
 
+``device``
+   PyTorch runtime device request. ``auto`` selects CUDA when available, then
+   MPS when available, and otherwise records CPU as the Run Manifest device.
+   Explicit ``cuda`` and ``mps`` requests fail when that backend is unavailable.
+
 Checkpoint Preparation
 ----------------------
 

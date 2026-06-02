@@ -35,6 +35,12 @@ from netflip.manifest import (
 )
 from netflip.model_adapter import ModelAdapter, PerturbableTensor
 from netflip.pytorch_adapter import PyTorchModelAdapter
+from netflip.runtime_device import (
+    ResolvedTorchDevice,
+    RuntimeDeviceUnavailableError,
+    TorchDeviceRequest,
+    resolve_torch_device,
+)
 from netflip.soft_error import (
     FAILURE_CRITERION_STOP_REASON,
     FAULT_BUDGET_STOP_REASON,
@@ -100,15 +106,19 @@ __all__ = [
     "PyTorchModelAdapter",
     "QuantizationSpec",
     "RandomSoftErrorScenarioSpec",
+    "ResolvedTorchDevice",
     "RunManifest",
+    "RuntimeDeviceUnavailableError",
     "SignedInt8TwoComplementCodec",
     "SoftErrorRunResult",
+    "TorchDeviceRequest",
     "UniformEligibleBitSelection",
     "__version__",
     "build_run_manifest",
     "candidate_trace_path",
     "load_experiment_spec",
     "parse_experiment_spec",
+    "resolve_torch_device",
     "run_uniform_random_soft_error_baseline",
     "sample_uniform_eligible_bit",
     "write_perturbation_trace",

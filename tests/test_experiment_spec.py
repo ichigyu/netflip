@@ -16,6 +16,7 @@ def test_random_soft_error_example_spec_parses() -> None:
     assert isinstance(spec, ExperimentSpec)
     assert spec.model.benchmark == "cifar10-resnet20"
     assert spec.model.checkpoint.path == "checkpoints/cifar10/resnet20-int8.pt"
+    assert spec.device == "auto"
     assert spec.dataset.root == "data/cifar10"
     assert spec.scenario.type == "soft_error"
     assert spec.scenario.fault_budget.max_flip_count == 128
@@ -80,6 +81,65 @@ def test_spec_rejects_missing_configurable_checkpoint_path() -> None:
                 max_flip_count: 1
               rng_seed: 1
             output_dir: runs/missing-checkpoint
+            """
+        )
+
+
+def test_spec_accepts_explicit_runtime_device_request() -> None:
+    spec = parse_experiment_spec(
+        """
+        schema_version: "2026.1"
+        run_id: explicit-device
+        device: mps
+        model:
+          benchmark: cifar10-resnet20
+          architecture: resnet20
+          num_classes: 10
+          checkpoint:
+            path: checkpoints/cifar10/resnet20-int8.pt
+            format: pytorch-state-dict
+          quantization:
+            codec: signed-int8-two-complement
+        dataset:
+          name: cifar10
+          root: data/cifar10
+        scenario:
+          type: soft_error
+          fault_budget:
+            max_flip_count: 1
+          rng_seed: 1
+        output_dir: runs/explicit-device
+        """
+    )
+
+    assert spec.device == "mps"
+
+
+def test_spec_rejects_unknown_runtime_device_request() -> None:
+    with pytest.raises(ValidationError, match="device"):
+        parse_experiment_spec(
+            """
+            schema_version: "2026.1"
+            run_id: invalid-device
+            device: tpu
+            model:
+              benchmark: cifar10-resnet20
+              architecture: resnet20
+              num_classes: 10
+              checkpoint:
+                path: checkpoints/cifar10/resnet20-int8.pt
+                format: pytorch-state-dict
+              quantization:
+                codec: signed-int8-two-complement
+            dataset:
+              name: cifar10
+              root: data/cifar10
+            scenario:
+              type: soft_error
+              fault_budget:
+                max_flip_count: 1
+              rng_seed: 1
+            output_dir: runs/invalid-device
             """
         )
 

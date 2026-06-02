@@ -12,6 +12,7 @@ from beartype import beartype
 from pydantic import BaseModel, ConfigDict, Field
 
 from netflip.benchmarks import CIFAR10_CLASSES, CIFAR_RESNET20_BENCHMARK_ID
+from netflip.runtime_device import TorchDeviceRequest
 
 EXPERIMENT_SPEC_SCHEMA_VERSION = "2026.1"
 
@@ -100,6 +101,7 @@ class ExperimentSpec(BaseModel):
 
     schema_version: Literal["2026.1"] = EXPERIMENT_SPEC_SCHEMA_VERSION
     run_id: str = Field(min_length=1)
+    device: TorchDeviceRequest = "auto"
     model: BenchmarkModelSpec
     dataset: DatasetSpec
     scenario: RandomSoftErrorScenarioSpec | BfaPbsScenarioSpec
