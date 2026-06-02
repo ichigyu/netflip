@@ -42,7 +42,7 @@ Both example specs expose the paths that vary across local machines:
 
 ``dataset.selection_sample_limit`` / ``dataset.evaluation_sample_limit``
    Optional small-validation sample limits for MBP-friendly checks before a
-   larger CUDA-server reproduction run.
+   larger CUDA server reproduction run.
 
 ``model.checkpoint.path``
    Path to the prepared ResNet-20 checkpoint.
