@@ -10,6 +10,9 @@ API Reference
 .. automodule:: netflip.experiment_spec
    :members:
 
+.. automodule:: netflip.bfa_pbs
+   :members:
+
 .. automodule:: netflip.manifest
    :members:
 

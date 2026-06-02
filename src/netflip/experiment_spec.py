@@ -94,6 +94,7 @@ class BfaPbsScenarioSpec(BaseModel):
     max_flip_count: int = Field(gt=0)
     selection_batch_size: int = Field(gt=0)
     rng_seed: int
+    emit_candidate_trace: bool = False
 
 
 class ExperimentSpec(BaseModel):
