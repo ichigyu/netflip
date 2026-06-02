@@ -147,16 +147,16 @@ def load_cifar_resnet20_quantized_artifact(
 ) -> CifarResNet20QuantizedArtifact:
     """Load a CIFAR-10 ResNet-20 Quantized Model Artifact."""
     resolved_checkpoint_path = Path(checkpoint_path)
-    if not resolved_checkpoint_path.exists():
+    if not resolved_checkpoint_path.is_file():
         msg = (
-            "CIFAR-10 ResNet-20 checkpoint path does not exist: "
+            "CIFAR-10 ResNet-20 checkpoint path is not a file: "
             f"{resolved_checkpoint_path}"
         )
         raise FileNotFoundError(msg)
     resolved_scale_path = Path(scale_path)
-    if not resolved_scale_path.exists():
+    if not resolved_scale_path.is_file():
         msg = (
-            "CIFAR-10 ResNet-20 scale metadata path does not exist: "
+            "CIFAR-10 ResNet-20 scale metadata path is not a file: "
             f"{resolved_scale_path}"
         )
         raise FileNotFoundError(msg)
@@ -655,8 +655,7 @@ def _parse_optional_shape(value: Any, tensor_name: str) -> tuple[int, ...] | Non
     for dimension in value:
         if isinstance(dimension, bool) or not isinstance(dimension, int):
             msg = (
-                f"shape metadata for tensor {tensor_name!r} "
-                "must be a list of integers"
+                f"shape metadata for tensor {tensor_name!r} must be a list of integers"
             )
             raise ValueError(msg)
         if dimension < 0:
@@ -690,8 +689,7 @@ def _validate_expected_scale_tensor_names(
     if extra:
         msg = (
             "scale metadata contains tensors that are not perturbable "
-            "CIFAR-10 ResNet-20 weights: "
-            + ", ".join(extra)
+            "CIFAR-10 ResNet-20 weights: " + ", ".join(extra)
         )
         raise ValueError(msg)
 
@@ -710,7 +708,8 @@ def _load_pytorch_state_dict(
                 return nested
 
     msg = (
-        "checkpoint must be a PyTorch state_dict mapping tensor names to tensors"
+        f"checkpoint at {checkpoint_path} must be a PyTorch state_dict mapping "
+        "tensor names to tensors"
     )
     raise ValueError(msg)
 
@@ -876,10 +875,7 @@ def _load_validated_checkpoint_state(
     try:
         load_state_dict(checkpoint_state, strict=True)
     except RuntimeError as exc:
-        msg = (
-            "checkpoint could not be loaded into the CIFAR-10 ResNet-20 model: "
-            f"{exc}"
-        )
+        msg = f"checkpoint could not be loaded into the CIFAR-10 ResNet-20 model: {exc}"
         raise ValueError(msg) from exc
 
     for tensor_name in quantized_tensor_names:
@@ -916,7 +912,14 @@ def _resolve_state_tensor_parent(model: Any, tensor_name: str) -> tuple[Any, str
     parts = tensor_name.split(".")
     module = model
     for part in parts[:-1]:
-        module = getattr(module, part)
+        try:
+            module = getattr(module, part)
+        except AttributeError as exc:
+            msg = (
+                f"checkpoint tensor {tensor_name!r} does not map to a model "
+                f"module path at {part!r}"
+            )
+            raise ValueError(msg) from exc
     return module, parts[-1]
 
 
@@ -939,7 +942,7 @@ def _tensor_dtype(tensor: Any) -> str:
 
 
 def _is_signed_int8_dtype(dtype: str) -> bool:
-    return dtype.rsplit(".", maxsplit=1)[-1] == "int8"
+    return dtype in {"int8", "torch.int8"}
 
 
 def _dtype_metadata_matches(metadata_dtype: str, actual_dtype: str) -> bool:

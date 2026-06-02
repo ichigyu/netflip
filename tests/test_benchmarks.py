@@ -187,6 +187,18 @@ def test_load_cifar_resnet20_quantized_artifact_rejects_missing_checkpoint(
         )
 
 
+def test_load_cifar_resnet20_quantized_artifact_rejects_checkpoint_directory(
+    tmp_path: Any,
+) -> None:
+    scale_path = _write_scale_metadata(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="checkpoint path is not a file"):
+        load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=tmp_path,
+            scale_path=scale_path,
+        )
+
+
 def test_load_cifar_resnet20_quantized_artifact_rejects_missing_scale_metadata(
     tmp_path: Any,
 ) -> None:
@@ -197,6 +209,19 @@ def test_load_cifar_resnet20_quantized_artifact_rejects_missing_scale_metadata(
         load_cifar_resnet20_quantized_artifact(
             checkpoint_path=checkpoint_path,
             scale_path=tmp_path / "missing-scales.json",
+        )
+
+
+def test_load_cifar_resnet20_quantized_artifact_rejects_scale_metadata_directory(
+    tmp_path: Any,
+) -> None:
+    checkpoint_path = tmp_path / "resnet20-int8.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+
+    with pytest.raises(FileNotFoundError, match="scale metadata path is not a file"):
+        load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=checkpoint_path,
+            scale_path=tmp_path,
         )
 
 
@@ -237,6 +262,52 @@ def test_load_cifar_resnet20_quantized_artifact_rejects_non_int8_weight(
         load_cifar_resnet20_quantized_artifact(
             checkpoint_path=checkpoint_path,
             scale_path=scale_path,
+        )
+
+
+def test_load_cifar_resnet20_quantized_artifact_rejects_uint8_weight(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "resnet20-int8.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    scale_path = _write_scale_metadata(tmp_path, dtype="torch.uint8")
+    checkpoint_state = {
+        "features.weight": _FakeTensor((2, 2), "torch.uint8"),
+        "features.bias": _FakeTensor((2,), "torch.float32"),
+    }
+    _install_fake_quantized_runtime(monkeypatch, checkpoint_state)
+
+    with pytest.raises(ValueError, match="signed int8 dtype"):
+        load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=checkpoint_path,
+            scale_path=scale_path,
+        )
+
+
+def test_load_cifar_resnet20_quantized_artifact_reports_unusable_checkpoint_path(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "resnet20-int8.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    scale_path = _write_scale_metadata(tmp_path)
+    _install_fake_quantized_runtime(monkeypatch, {"state_dict": {"bad": "state"}})
+
+    with pytest.raises(ValueError, match=r"checkpoint at .*resnet20-int8.pt"):
+        load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=checkpoint_path,
+            scale_path=scale_path,
+        )
+
+
+def test_resolve_state_tensor_parent_reports_unknown_module_path() -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    with pytest.raises(ValueError, match="does not map to a model module path"):
+        cifar_resnet20._resolve_state_tensor_parent(
+            _FakeQuantizedModel(),
+            "missing.weight",
         )
 
 
@@ -805,7 +876,7 @@ class _FakeTorch:
 
 def _install_fake_quantized_runtime(
     monkeypatch: pytest.MonkeyPatch,
-    checkpoint_state: dict[str, _FakeTensor],
+    checkpoint_state: Any,
     *,
     model: _FakeQuantizedModel | None = None,
 ) -> None:
@@ -828,6 +899,7 @@ def _write_scale_metadata(
     tmp_path: Any,
     *,
     shape: tuple[int, ...] = (2, 2),
+    dtype: str = "int8",
 ) -> Any:
     scale_path = tmp_path / "scales.json"
     scale_path.write_text(
@@ -839,7 +911,7 @@ def _write_scale_metadata(
                     "features.weight": {
                         "scale": 0.25,
                         "shape": list(shape),
-                        "dtype": "int8",
+                        "dtype": dtype,
                     }
                 },
             }
