@@ -147,6 +147,131 @@ def test_load_per_tensor_scale_metadata_rejects_malformed_json(
         load_per_tensor_scale_metadata(scale_path)
 
 
+@pytest.mark.parametrize(
+    ("metadata", "message"),
+    [
+        ([], "JSON object"),
+        (
+            {
+                "scale_granularity": "per-tensor",
+                "tensors": {"features.weight": {"scale": 0.25}},
+            },
+            "codec",
+        ),
+        (
+            {
+                "codec": "float32",
+                "scale_granularity": "per-tensor",
+                "tensors": {"features.weight": {"scale": 0.25}},
+            },
+            "codec must be",
+        ),
+        (
+            {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-channel",
+                "tensors": {"features.weight": {"scale": 0.25}},
+            },
+            "scale_granularity",
+        ),
+        (
+            {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-tensor",
+                "tensors": [],
+            },
+            "tensors",
+        ),
+        (
+            {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-tensor",
+                "tensors": {"features.weight": 0.25},
+            },
+            "must be an object",
+        ),
+        (
+            {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-tensor",
+                "tensors": {"features.weight": {"scale": False}},
+            },
+            "numeric scale",
+        ),
+        (
+            {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-tensor",
+                "tensors": {"features.weight": {"scale": -0.25}},
+            },
+            "finite positive",
+        ),
+        (
+            {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-tensor",
+                "tensors": {"features.weight": {"scale": 0.25, "shape": "2x2"}},
+            },
+            "shape metadata",
+        ),
+        (
+            {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-tensor",
+                "tensors": {"features.weight": {"scale": 0.25, "shape": [2, True]}},
+            },
+            "list of integers",
+        ),
+        (
+            {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-tensor",
+                "tensors": {"features.weight": {"scale": 0.25, "shape": [2, -1]}},
+            },
+            "non-negative",
+        ),
+        (
+            {
+                "codec": "signed-int8-two-complement",
+                "scale_granularity": "per-tensor",
+                "tensors": {"features.weight": {"scale": 0.25, "dtype": ""}},
+            },
+            "dtype metadata",
+        ),
+    ],
+)
+def test_load_per_tensor_scale_metadata_rejects_invalid_schema(
+    tmp_path: Any,
+    metadata: Any,
+    message: str,
+) -> None:
+    scale_path = tmp_path / "scales.json"
+    scale_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_per_tensor_scale_metadata(scale_path)
+
+
+def test_load_per_tensor_scale_metadata_validates_expected_tensor_names(
+    tmp_path: Any,
+) -> None:
+    scale_path = _write_scale_metadata(tmp_path)
+
+    with pytest.raises(ValueError, match="missing per-tensor scales"):
+        load_per_tensor_scale_metadata(
+            scale_path,
+            expected_tensor_names=("features.weight", "other.weight"),
+        )
+    with pytest.raises(ValueError, match="not perturbable"):
+        load_per_tensor_scale_metadata(
+            scale_path,
+            expected_tensor_names=(),
+        )
+    metadata = load_per_tensor_scale_metadata(scale_path)
+    with pytest.raises(KeyError, match="unknown per-tensor"):
+        metadata.scale_for("other.weight")
+
+
 def test_load_cifar_resnet20_quantized_artifact_with_fake_runtime(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -173,6 +298,12 @@ def test_load_cifar_resnet20_quantized_artifact_with_fake_runtime(
     assert artifact.adapter.perturbable_tensors()[0].name == "features.weight"
     assert artifact.adapter.perturbable_tensors()[0].dtype == "torch.int8"
     assert artifact.adapter.perturbable_tensors()[0].requires_grad is False
+    assert model.load_state_dict_calls == [
+        {
+            "state_dict": {"features.bias": checkpoint_state["features.bias"]},
+            "strict": False,
+        }
+    ]
 
 
 def test_load_cifar_resnet20_quantized_artifact_rejects_missing_checkpoint(
@@ -242,6 +373,108 @@ def test_load_cifar_resnet20_quantized_artifact_rejects_shape_mismatch(
         load_cifar_resnet20_quantized_artifact(
             checkpoint_path=checkpoint_path,
             scale_path=scale_path,
+        )
+
+
+def test_load_cifar_resnet20_quantized_artifact_accepts_nested_state_dict(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "resnet20-int8.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    scale_path = _write_scale_metadata(tmp_path)
+    checkpoint_state = {
+        "features.weight": _FakeTensor((2, 2), "torch.int8"),
+        "features.bias": _FakeTensor((2,), "torch.float32"),
+    }
+    _install_fake_quantized_runtime(
+        monkeypatch,
+        {"state_dict": checkpoint_state},
+    )
+
+    artifact = load_cifar_resnet20_quantized_artifact(
+        checkpoint_path=checkpoint_path,
+        scale_path=scale_path,
+    )
+
+    assert artifact.adapter.perturbable_tensors()[0].dtype == "torch.int8"
+
+
+def test_load_cifar_resnet20_quantized_artifact_rejects_checkpoint_name_mismatch(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "resnet20-int8.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    scale_path = _write_scale_metadata(tmp_path)
+
+    _install_fake_quantized_runtime(
+        monkeypatch,
+        {"features.weight": _FakeTensor((2, 2), "torch.int8")},
+    )
+    with pytest.raises(ValueError, match="missing tensors"):
+        load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=checkpoint_path,
+            scale_path=scale_path,
+        )
+
+    _install_fake_quantized_runtime(
+        monkeypatch,
+        {
+            "features.weight": _FakeTensor((2, 2), "torch.int8"),
+            "features.bias": _FakeTensor((2,), "torch.float32"),
+            "extra.weight": _FakeTensor((1,), "torch.int8"),
+        },
+    )
+    with pytest.raises(ValueError, match="unexpected tensors"):
+        load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=checkpoint_path,
+            scale_path=scale_path,
+        )
+
+
+def test_load_cifar_resnet20_quantized_artifact_rejects_non_quantized_dtype_mismatch(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "resnet20-int8.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    scale_path = _write_scale_metadata(tmp_path)
+    checkpoint_state = {
+        "features.weight": _FakeTensor((2, 2), "torch.int8"),
+        "features.bias": _FakeTensor((2,), "torch.float64"),
+    }
+    _install_fake_quantized_runtime(monkeypatch, checkpoint_state)
+
+    with pytest.raises(ValueError, match=r"features.bias.*dtype"):
+        load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=checkpoint_path,
+            scale_path=scale_path,
+        )
+
+
+def test_load_cifar_resnet20_quantized_artifact_validates_scale_shape_and_dtype(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "resnet20-int8.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    checkpoint_state = {
+        "features.weight": _FakeTensor((2, 2), "torch.int8"),
+        "features.bias": _FakeTensor((2,), "torch.float32"),
+    }
+    _install_fake_quantized_runtime(monkeypatch, checkpoint_state)
+
+    with pytest.raises(ValueError, match=r"scale metadata.*shape"):
+        load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=checkpoint_path,
+            scale_path=_write_scale_metadata(tmp_path, shape=(1, 4)),
+        )
+
+    with pytest.raises(ValueError, match=r"scale metadata.*dtype"):
+        load_cifar_resnet20_quantized_artifact(
+            checkpoint_path=checkpoint_path,
+            scale_path=_write_scale_metadata(tmp_path, dtype="float32"),
         )
 
 
@@ -809,6 +1042,7 @@ class _FakeQuantizedModel:
     def __init__(self) -> None:
         self.features = _FakeLayer()
         self.training = True
+        self.load_state_dict_calls: list[dict[str, Any]] = []
 
     def state_dict(self) -> dict[str, _FakeTensor]:
         return {
@@ -828,17 +1062,24 @@ class _FakeQuantizedModel:
         *,
         strict: bool,
     ) -> None:
-        assert strict is True
-        self.features.weight = _FakeParameter(
-            state_dict["features.weight"].shape,
-            state_dict["features.weight"].dtype,
-            requires_grad=True,
+        self.load_state_dict_calls.append(
+            {
+                "state_dict": dict(state_dict),
+                "strict": strict,
+            }
         )
-        self.features.bias = _FakeParameter(
-            state_dict["features.bias"].shape,
-            state_dict["features.bias"].dtype,
-            requires_grad=True,
-        )
+        if "features.weight" in state_dict:
+            self.features.weight = _FakeParameter(
+                state_dict["features.weight"].shape,
+                state_dict["features.weight"].dtype,
+                requires_grad=True,
+            )
+        if "features.bias" in state_dict:
+            self.features.bias = _FakeParameter(
+                state_dict["features.bias"].shape,
+                state_dict["features.bias"].dtype,
+                requires_grad=True,
+            )
 
     def eval(self) -> None:
         self.training = False
@@ -851,11 +1092,11 @@ class _FakeQuantizedModel:
 
 
 class _FakeTorch:
-    def __init__(self, checkpoint_state: dict[str, _FakeTensor]) -> None:
+    def __init__(self, checkpoint_state: Any) -> None:
         self.checkpoint_state = checkpoint_state
         self.nn = SimpleNamespace(Parameter=self._parameter)
 
-    def load(self, path: str, *, map_location: str) -> dict[str, _FakeTensor]:
+    def load(self, path: str, *, map_location: str) -> Any:
         assert path
         assert map_location == "cpu"
         return self.checkpoint_state

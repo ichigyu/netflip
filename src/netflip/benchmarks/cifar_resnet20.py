@@ -868,17 +868,23 @@ def _load_validated_checkpoint_state(
     quantized_tensor_names: Iterable[str],
     torch: Any,
 ) -> None:
+    quantized_names = set(quantized_tensor_names)
     load_state_dict = getattr(model, "load_state_dict", None)
     if not callable(load_state_dict):
         msg = "CIFAR-10 ResNet-20 model must provide callable load_state_dict"
         raise TypeError(msg)
+    non_quantized_state = {
+        name: tensor
+        for name, tensor in checkpoint_state.items()
+        if name not in quantized_names
+    }
     try:
-        load_state_dict(checkpoint_state, strict=True)
+        load_state_dict(non_quantized_state, strict=False)
     except RuntimeError as exc:
         msg = f"checkpoint could not be loaded into the CIFAR-10 ResNet-20 model: {exc}"
         raise ValueError(msg) from exc
 
-    for tensor_name in quantized_tensor_names:
+    for tensor_name in quantized_names:
         _replace_module_state_tensor(
             model,
             tensor_name,
@@ -896,8 +902,7 @@ def _replace_module_state_tensor(
 ) -> None:
     module, attribute_name = _resolve_state_tensor_parent(model, tensor_name)
     clone = _clone_detached_tensor(tensor)
-    parameter_names = dict(model.named_parameters()).keys()
-    if tensor_name in parameter_names:
+    if _is_model_parameter_name(model, tensor_name):
         parameter = torch.nn.Parameter(clone, requires_grad=False)
         setattr(module, attribute_name, parameter)
         return
@@ -906,6 +911,10 @@ def _replace_module_state_tensor(
         register_buffer(attribute_name, clone)
         return
     setattr(module, attribute_name, clone)
+
+
+def _is_model_parameter_name(model: Any, tensor_name: str) -> bool:
+    return any(name == tensor_name for name, _parameter in model.named_parameters())
 
 
 def _resolve_state_tensor_parent(model: Any, tensor_name: str) -> tuple[Any, str]:
