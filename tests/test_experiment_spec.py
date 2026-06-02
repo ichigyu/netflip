@@ -31,6 +31,34 @@ def test_bfa_pbs_example_spec_parses() -> None:
     assert spec.scenario.selection_batch_size == 128
 
 
+def test_spec_rejects_invalid_schema_version() -> None:
+    with pytest.raises(ValidationError, match="schema_version"):
+        parse_experiment_spec(
+            """
+            schema_version: "2025.1"
+            run_id: invalid-schema-version
+            model:
+              benchmark: cifar10-resnet20
+              architecture: resnet20
+              num_classes: 10
+              checkpoint:
+                path: checkpoints/cifar10/resnet20-int8.pt
+                format: pytorch-state-dict
+              quantization:
+                codec: signed-int8-two-complement
+            dataset:
+              name: cifar10
+              root: data/cifar10
+            scenario:
+              type: soft_error
+              fault_budget:
+                max_flip_count: 1
+              rng_seed: 1
+            output_dir: runs/invalid-schema-version
+            """
+        )
+
+
 def test_spec_rejects_missing_configurable_checkpoint_path() -> None:
     with pytest.raises(ValidationError, match="checkpoint"):
         parse_experiment_spec(
