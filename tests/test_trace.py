@@ -148,3 +148,26 @@ def test_write_candidate_trace_emits_one_candidate_bit_flip_per_line(
     written = json.loads(lines[0])
     assert written["population_ordinal"] == 7
     assert written["selection_score"] == 3.75
+
+
+def test_candidate_trace_entry_requires_reproducibility_seed() -> None:
+    kwargs = {
+        "step_index": 0,
+        "scenario_type": "attack",
+        "strategy_name": "bfa-pbs",
+        "artifact_kind": "model_state_bits",
+        "population_ordinal": 7,
+        "tensor_name": "layer1.weight",
+        "tensor_index": (0, 1),
+        "representation": "signed-int8-two-complement",
+        "bit_index": 7,
+        "bit_role": "sign_msb",
+        "value_before": 0,
+        "value_after": -128,
+        "objective_before": 0.5,
+        "objective_after": 4.25,
+        "selection_score": 3.75,
+    }
+
+    with pytest.raises(ValidationError, match="rng_seed or selection_seed"):
+        CandidateTraceEntry.model_validate(kwargs)

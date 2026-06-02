@@ -220,6 +220,62 @@ def test_attack_run_rejects_invalid_objective_return_types(
     assert adapter.values == [0]
 
 
+def test_run_result_bit_flip_ratio_handles_empty_population() -> None:
+    from netflip import BfaPbsRunResult
+
+    result = BfaPbsRunResult(
+        perturbation_trace=(),
+        stopped_because=ATTACK_BUDGET_STOP_REASON,
+        eligible_bit_population=0,
+    )
+
+    assert result.bit_flip_ratio == 0
+
+
+def test_candidate_scoring_rejects_invalid_excluded_ordinals() -> None:
+    adapter = _TinyInt8Adapter([0])
+
+    with pytest.raises(ValueError, match="population_ordinal must be non-negative"):
+        score_bfa_pbs_candidates(
+            adapter=adapter,
+            objective_evaluator=_sum_objective,
+            excluded_ordinals={-1},
+        )
+
+    with pytest.raises(IndexError, match="population_ordinal is out of bounds"):
+        score_bfa_pbs_candidates(
+            adapter=adapter,
+            objective_evaluator=_sum_objective,
+            excluded_ordinals={8},
+        )
+
+
+def test_attack_run_rejects_invalid_integer_inputs() -> None:
+    adapter = _TinyInt8Adapter([0])
+
+    with pytest.raises(ValueError, match="max_flip_count must be positive"):
+        run_bfa_pbs_attack_strategy(
+            adapter=adapter,
+            objective_evaluator=_sum_objective,
+            metric_evaluator=_sum_metric,
+            attack_objective=MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
+            target_policy=GROUND_TRUTH_TARGET_POLICY,
+            max_flip_count=0,
+            rng_seed=2026,
+        )
+
+    with pytest.raises(TypeError, match="rng_seed must be an integer"):
+        run_bfa_pbs_attack_strategy(
+            adapter=adapter,
+            objective_evaluator=_sum_objective,
+            metric_evaluator=_sum_metric,
+            attack_objective=MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
+            target_policy=GROUND_TRUTH_TARGET_POLICY,
+            max_flip_count=1,
+            rng_seed=True,
+        )
+
+
 def test_unsupported_attack_objectives_and_target_policies_fail_clearly() -> None:
     with pytest.raises(ValueError, match="unsupported BFA/PBS attack_objective"):
         validate_bfa_pbs_scenario_config(

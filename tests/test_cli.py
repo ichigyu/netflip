@@ -197,6 +197,36 @@ def test_cli_run_soft_error_spec_writes_manifest_and_trace(
     assert json.loads(trace_lines[0])["scenario_type"] == "soft_error"
 
 
+def test_cli_run_prints_candidate_trace_path_when_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.console as console_module
+
+    candidate_trace_path = tmp_path / "candidate_trace.jsonl"
+    monkeypatch.setattr(
+        console_module,
+        "execute_experiment_run",
+        lambda spec: SimpleNamespace(
+            output_dir=tmp_path,
+            manifest_path=tmp_path / "manifest.json",
+            perturbation_trace_path=tmp_path / "perturbation_trace.jsonl",
+            candidate_trace_path=candidate_trace_path,
+            summary_json_path=tmp_path / "summary.json",
+            summary_csv_path=tmp_path / "summary.csv",
+            device="cpu",
+            flip_count=1,
+            stopped_because="attack_budget",
+        ),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["run", "attack.yaml"])
+
+    assert result.exit_code == 0
+    assert f"Candidate trace: {candidate_trace_path}" in result.output
+
+
 def test_cli_run_unsupported_attack_objective_fails_clearly(tmp_path: Path) -> None:
     spec_path = tmp_path / "attack.yaml"
     spec_path.write_text(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import builtins
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -7,8 +9,17 @@ from typing import Any
 import pytest
 
 import netflip.run as run_module
-from netflip import PyTorchModelAdapter
-from netflip.run import ExperimentRunError, UnsupportedBenchmarkError
+from netflip import (
+    BfaPbsRunResult,
+    CandidateTraceEntry,
+    PerturbationTraceEntry,
+    PyTorchModelAdapter,
+)
+from netflip.run import (
+    ExperimentRunError,
+    UnsupportedBenchmarkError,
+    UnsupportedScenarioError,
+)
 
 
 def _write_soft_error_spec(tmp_path: Path, *, include_scale_path: bool = True) -> Path:
@@ -147,9 +158,137 @@ def _fake_tiny_torch_artifact(tmp_path: Path, torch_module: Any) -> Any:
     )
 
 
+class _FakeNoGrad:
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+
+class _FakeLoss:
+    def item(self) -> float:
+        return 2.5
+
+
+class _FakeTorch:
+    def __init__(self) -> None:
+        self.cross_entropy_calls: list[dict[str, Any]] = []
+        self.nn = SimpleNamespace(
+            functional=SimpleNamespace(cross_entropy=self.cross_entropy)
+        )
+
+    def no_grad(self) -> _FakeNoGrad:
+        return _FakeNoGrad()
+
+    def cross_entropy(self, outputs: Any, targets: Any, *, reduction: str) -> _FakeLoss:
+        self.cross_entropy_calls.append(
+            {"outputs": outputs, "targets": targets, "reduction": reduction}
+        )
+        return _FakeLoss()
+
+
+class _FakeTensor:
+    def __init__(self) -> None:
+        self.to_calls: list[str] = []
+
+    def to(self, device: str) -> _FakeTensor:
+        self.to_calls.append(device)
+        return self
+
+
+class _FakeObjectiveModel:
+    def __init__(self) -> None:
+        self.training = True
+        self.to_calls: list[str] = []
+        self.eval_calls = 0
+        self.train_calls: list[bool] = []
+        self.forward_calls: list[Any] = []
+
+    def to(self, device: str) -> None:
+        self.to_calls.append(device)
+
+    def eval(self) -> None:
+        self.eval_calls += 1
+        self.training = False
+
+    def train(self, mode: bool = True) -> None:
+        self.train_calls.append(mode)
+        self.training = mode
+
+    def __call__(self, inputs: Any) -> str:
+        self.forward_calls.append(inputs)
+        return "outputs"
+
+
+def _attack_trace_entry() -> PerturbationTraceEntry:
+    return PerturbationTraceEntry(
+        step_index=0,
+        scenario_type="attack",
+        strategy_name="bfa-pbs",
+        artifact_kind="model_state_bits",
+        tensor_name="features.weight",
+        tensor_index=(0,),
+        representation="signed-int8-two-complement",
+        bit_index=7,
+        bit_role="sign_msb",
+        value_before=0,
+        value_after=-128,
+        flip_count=1,
+        bit_flip_ratio=1 / 8,
+        metric_before={"score": 1.0},
+        metric_after={"score": 0.5},
+        selection_score=2.5,
+        rng_seed=2026,
+        layer_name="features",
+        eligible_bit_population=8,
+    )
+
+
+def _candidate_trace_entry() -> CandidateTraceEntry:
+    return CandidateTraceEntry(
+        step_index=0,
+        scenario_type="attack",
+        strategy_name="bfa-pbs",
+        artifact_kind="model_state_bits",
+        population_ordinal=7,
+        tensor_name="features.weight",
+        tensor_index=(0,),
+        representation="signed-int8-two-complement",
+        bit_index=7,
+        bit_role="sign_msb",
+        value_before=0,
+        value_after=-128,
+        objective_before=0.5,
+        objective_after=3.0,
+        selection_score=2.5,
+        rng_seed=2026,
+        layer_name="features",
+        eligible_bit_population=8,
+    )
+
+
 def test_execute_experiment_run_wraps_missing_spec_path(tmp_path: Path) -> None:
     with pytest.raises(ExperimentRunError, match="failed to load Experiment Spec"):
         run_module.execute_experiment_run(tmp_path / "missing.yaml")
+
+
+def test_execute_experiment_run_rejects_unknown_scenario_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = run_module.load_experiment_spec(_write_soft_error_spec(tmp_path))
+    unsupported_spec = spec.model_copy(
+        update={"scenario": SimpleNamespace(type="mystery")}
+    )
+    monkeypatch.setattr(
+        run_module,
+        "load_experiment_spec",
+        lambda path: unsupported_spec,
+    )
+
+    with pytest.raises(UnsupportedScenarioError, match="unsupported scenario"):
+        run_module.execute_experiment_run(tmp_path / "spec.yaml")
 
 
 def test_execute_experiment_run_wraps_device_resolution_errors(
@@ -361,6 +500,61 @@ def test_execute_experiment_run_supports_tiny_bfa_pbs_attack(
     assert len(candidate_lines) == 8
 
 
+def test_execute_experiment_run_writes_candidate_trace_without_torch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_attack_spec(tmp_path, emit_candidate_trace=True)
+    dataloader_calls: list[dict[str, Any]] = []
+    objective_calls: list[tuple[Any, Any, str]] = []
+
+    def fake_dataloaders(**kwargs: Any) -> SimpleNamespace:
+        dataloader_calls.append(kwargs)
+        return SimpleNamespace(selection=[("inputs", "targets")], evaluation=["eval"])
+
+    def fake_cross_entropy(model: Any, batch: Any, *, device: str) -> float:
+        objective_calls.append((model, batch, device))
+        return 2.5
+
+    def fake_attack_run(**kwargs: Any) -> BfaPbsRunResult:
+        assert kwargs["objective_evaluator"](kwargs["adapter"]) == 2.5
+        return BfaPbsRunResult(
+            perturbation_trace=(_attack_trace_entry(),),
+            stopped_because="attack_budget",
+            eligible_bit_population=8,
+            candidate_trace=(_candidate_trace_entry(),),
+        )
+
+    monkeypatch.setattr(run_module, "resolve_torch_device", lambda requested: "cpu")
+    monkeypatch.setattr(
+        run_module,
+        "_load_benchmark_artifact",
+        lambda spec: _fake_artifact(tmp_path),
+    )
+    monkeypatch.setattr(run_module, "build_cifar10_dataloaders", fake_dataloaders)
+    monkeypatch.setattr(
+        run_module,
+        "evaluate_classification_metrics",
+        lambda model, dataloader, *, device: {"score": 1.0},
+    )
+    monkeypatch.setattr(
+        run_module,
+        "_classification_cross_entropy",
+        fake_cross_entropy,
+    )
+    monkeypatch.setattr(run_module, "run_bfa_pbs_attack_strategy", fake_attack_run)
+
+    output = run_module.execute_experiment_run(spec_path)
+
+    assert dataloader_calls[0]["batch_size"] == 3
+    assert objective_calls == [("adapter-model", ("inputs", "targets"), "cpu")]
+    assert output.flip_count == 1
+    candidate_trace_path = output.candidate_trace_path
+    assert candidate_trace_path is not None
+    assert candidate_trace_path == tmp_path / "run-output" / "candidate_trace.jsonl"
+    assert candidate_trace_path.read_text(encoding="utf-8").splitlines()
+
+
 def test_load_benchmark_artifact_wraps_loader_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -378,6 +572,80 @@ def test_load_benchmark_artifact_wraps_loader_errors(
 
     with pytest.raises(ExperimentRunError, match="bad checkpoint"):
         run_module._load_benchmark_artifact(spec)
+
+
+def test_classification_cross_entropy_uses_fake_torch_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_torch = _FakeTorch()
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    model = _FakeObjectiveModel()
+    inputs = _FakeTensor()
+    targets = _FakeTensor()
+
+    loss = run_module._classification_cross_entropy(
+        model,
+        (inputs, targets),
+        device="cpu",
+    )
+
+    assert loss == 2.5
+    assert model.to_calls == ["cpu"]
+    assert inputs.to_calls == ["cpu"]
+    assert targets.to_calls == ["cpu"]
+    assert model.eval_calls == 1
+    assert model.train_calls == [True]
+    assert model.training is True
+    assert model.forward_calls == [inputs]
+    assert fake_torch.cross_entropy_calls == [
+        {"outputs": "outputs", "targets": targets, "reduction": "mean"}
+    ]
+
+
+def test_classification_cross_entropy_reports_missing_torch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    def missing_torch_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "torch":
+            raise ModuleNotFoundError(name)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_torch_import)
+
+    with pytest.raises(ModuleNotFoundError, match="requires PyTorch"):
+        run_module._classification_cross_entropy(
+            object(),
+            (object(), object()),
+            device="cpu",
+        )
+
+
+def test_classification_cross_entropy_rejects_malformed_selection_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
+
+    with pytest.raises(TypeError, match="selection batch"):
+        run_module._classification_cross_entropy(
+            object(),
+            object(),
+            device="cpu",
+        )
+
+
+def test_first_selection_batch_rejects_empty_dataloader() -> None:
+    with pytest.raises(ValueError, match="at least one sample"):
+        run_module._first_selection_batch([])
+
+
+def test_dataloader_batch_size_uses_attack_selection_batch_size(tmp_path: Path) -> None:
+    attack_spec = run_module.load_experiment_spec(_write_attack_spec(tmp_path))
+    soft_error_spec = run_module.load_experiment_spec(_write_soft_error_spec(tmp_path))
+
+    assert run_module._dataloader_batch_size(attack_spec) == 3
+    assert run_module._dataloader_batch_size(soft_error_spec) == 128
 
 
 def test_run_metadata_helpers_cover_optional_branches(
