@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
 from netflip.pytorch_adapter import PyTorchModelAdapter
+from netflip.runtime_device import resolve_torch_device
 
 CIFAR_RESNET20_BENCHMARK_ID = "cifar10-resnet20"
 CIFAR10_CLASSES = 10
@@ -21,6 +22,16 @@ CIFAR10_NORMALIZATION_STD = (0.2023, 0.1994, 0.2010)
 CIFAR10_SPLITS = ("train", "test")
 SIGNED_INT8_TWO_COMPLEMENT_CODEC = "signed-int8-two-complement"
 PER_TENSOR_SCALE_GRANULARITY = "per-tensor"
+BFA_CIFAR_RESNET20_EPOCHS = 160
+BFA_CIFAR_RESNET20_BATCH_SIZE = 128
+BFA_CIFAR_RESNET20_LEARNING_RATE = 0.1
+BFA_CIFAR_RESNET20_LR_SCHEDULE = (80, 120)
+BFA_CIFAR_RESNET20_LR_GAMMAS = (0.1, 0.1)
+BFA_CIFAR_RESNET20_MOMENTUM = 0.9
+BFA_CIFAR_RESNET20_WEIGHT_DECAY = 0.0003
+BFA_CIFAR_RESNET20_NUM_WORKERS = 4
+
+ProgressReporter = Callable[[str], None]
 
 
 class Cifar10DatasetRole(str, Enum):
@@ -102,10 +113,30 @@ class CifarResNet20QuantizedArtifact:
     quantization: PerTensorScaleMetadata
 
 
+@dataclass(frozen=True)
+class CifarResNet20ArtifactPreparationOutput:
+    """Paths and metrics emitted by CIFAR-10 ResNet-20 artifact preparation."""
+
+    fp32_checkpoint_path: Path
+    int8_checkpoint_path: Path
+    scale_path: Path
+    evaluation_metrics: Mapping[str, float]
+    device: str
+    epochs: int
+
+
 class TorchModule(Protocol):
     """Minimal structural type for lazily imported PyTorch modules."""
 
     training: bool
+
+    def eval(self) -> Any:
+        """Put the module in evaluation mode."""
+        ...
+
+    def train(self) -> Any:
+        """Put the module in training mode."""
+        ...
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Run the module."""
@@ -117,6 +148,14 @@ class CifarResNet20Model(TorchModule, Protocol):
 
     benchmark_id: str
     config: ResNet20Config
+
+    def parameters(self) -> Iterable[Any]:
+        """Return model parameters."""
+        ...
+
+    def named_parameters(self) -> Iterable[tuple[str, Any]]:
+        """Return named model parameters."""
+        ...
 
 
 def build_cifar_resnet20(
@@ -136,6 +175,261 @@ def build_cifar_resnet20(
         num_classes=num_classes,
     )
     return _make_cifar_resnet(config, torch)
+
+
+def prepare_cifar_resnet20_artifacts(
+    *,
+    dataset_root: str | PathLike[str],
+    output_dir: str | PathLike[str] = "checkpoints/cifar10",
+    download: bool = False,
+    epochs: int = BFA_CIFAR_RESNET20_EPOCHS,
+    batch_size: int = BFA_CIFAR_RESNET20_BATCH_SIZE,
+    learning_rate: float = BFA_CIFAR_RESNET20_LEARNING_RATE,
+    schedule: Iterable[int] = BFA_CIFAR_RESNET20_LR_SCHEDULE,
+    gammas: Iterable[float] = BFA_CIFAR_RESNET20_LR_GAMMAS,
+    momentum: float = BFA_CIFAR_RESNET20_MOMENTUM,
+    weight_decay: float = BFA_CIFAR_RESNET20_WEIGHT_DECAY,
+    train_sample_limit: int | None = None,
+    evaluation_sample_limit: int | None = None,
+    num_workers: int = BFA_CIFAR_RESNET20_NUM_WORKERS,
+    device: str = "auto",
+    rng_seed: int = 2026,
+    progress: ProgressReporter | None = None,
+) -> CifarResNet20ArtifactPreparationOutput:
+    """Train and quantize CIFAR-10 ResNet-20 benchmark artifacts.
+
+    The emitted int8 checkpoint and per-tensor scale metadata match the
+    default paths used by the example CIFAR-10 Experiment Specs.
+    """
+    learning_rate_schedule = tuple(schedule)
+    learning_rate_gammas = tuple(gammas)
+    _validate_artifact_preparation_settings(
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        schedule=learning_rate_schedule,
+        gammas=learning_rate_gammas,
+        momentum=momentum,
+        weight_decay=weight_decay,
+        train_sample_limit=train_sample_limit,
+        evaluation_sample_limit=evaluation_sample_limit,
+        num_workers=num_workers,
+    )
+    torch = _require_pytorch()
+    resolved_device = resolve_torch_device(device)
+    torch.manual_seed(rng_seed)
+
+    _report_progress(progress, "== Setup ==")
+    _report_progress(progress, f"  device: {resolved_device}")
+    _report_progress(progress, f"  rng_seed: {rng_seed}")
+    _report_progress(progress, f"  epochs: {epochs}")
+    _report_progress(progress, f"  batch_size: {batch_size}")
+    _report_progress(progress, f"  learning_rate: {learning_rate:.6g}")
+    schedule_description = _learning_rate_schedule_description(
+        learning_rate_schedule,
+        learning_rate_gammas,
+    )
+    _report_progress(
+        progress,
+        f"  lr_schedule: {schedule_description}",
+    )
+
+    _report_progress(progress, "")
+    _report_progress(progress, "== Model ==")
+    _report_progress(progress, "  building: CIFAR-10 ResNet-20")
+    model = build_cifar_resnet20()
+    move_model = getattr(model, "to", None)
+    if callable(move_model):
+        move_model(resolved_device)
+
+    if epochs > 0:
+        _report_progress(progress, "")
+        _report_progress(progress, "== Training Data ==")
+        _report_dataset_settings(progress, root=dataset_root, download=download)
+        train_loader = _build_cifar10_training_dataloader(
+            root=dataset_root,
+            batch_size=batch_size,
+            download=download,
+            sample_limit=train_sample_limit,
+            num_workers=num_workers,
+        )
+        _report_dataloader_settings(progress, train_loader)
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=learning_rate,
+            momentum=momentum,
+            weight_decay=weight_decay,
+        )
+        _report_progress(progress, "")
+        _report_progress(progress, "== Training ==")
+        _report_progress(progress, "  epoch        lr       loss       top1")
+        for epoch_index in range(epochs):
+            epoch_learning_rate = _apply_learning_rate_schedule(
+                optimizer,
+                base_learning_rate=learning_rate,
+                epoch_index=epoch_index,
+                schedule=learning_rate_schedule,
+                gammas=learning_rate_gammas,
+            )
+            epoch_metrics = _train_cifar_resnet20_epoch(
+                model,
+                train_loader,
+                optimizer=optimizer,
+                torch=torch,
+                device=resolved_device,
+                progress=progress,
+                epoch_index=epoch_index,
+                epochs=epochs,
+                learning_rate=epoch_learning_rate,
+            )
+            _report_progress(
+                progress,
+                (
+                    f"  {epoch_index + 1:03d}/{epochs:03d}  "
+                    f"{epoch_learning_rate:8.6g}  "
+                    f"{epoch_metrics['loss']:9.6g}  "
+                    f"{_format_percent(epoch_metrics['top1_accuracy']):>7}"
+                ),
+            )
+    else:
+        _report_progress(progress, "")
+        _report_progress(progress, "== Training ==")
+        _report_progress(progress, "  skipped: epochs=0")
+
+    _report_progress(progress, "")
+    _report_progress(progress, "== Evaluation Data ==")
+    _report_dataset_settings(progress, root=dataset_root, download=download)
+    evaluation_loader = build_cifar10_dataloader(
+        Cifar10DatasetRequest(
+            role=Cifar10DatasetRole.EVALUATION,
+            root=dataset_root,
+            split="test",
+            sample_limit=evaluation_sample_limit,
+            download=download,
+        ),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+    )
+    _report_dataloader_settings(progress, evaluation_loader)
+    _report_progress(progress, "")
+    _report_progress(progress, "== Clean Baseline ==")
+    _report_progress(progress, "  evaluating...")
+    evaluation_metrics = evaluate_classification_metrics(
+        model,
+        evaluation_loader,
+        device=resolved_device,
+    )
+    _report_progress(
+        progress,
+        f"  top1: {_format_percent(evaluation_metrics['top1_accuracy'])}",
+    )
+    _report_progress(
+        progress,
+        f"  cross_entropy: {evaluation_metrics['cross_entropy']:.6g}",
+    )
+
+    resolved_output_dir = Path(output_dir)
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    fp32_checkpoint_path = resolved_output_dir / "resnet20-fp32.pt"
+    int8_checkpoint_path = resolved_output_dir / "resnet20-int8.pt"
+    scale_path = resolved_output_dir / "resnet20-int8-scales.json"
+
+    _report_progress(progress, "")
+    _report_progress(progress, "== Artifacts ==")
+    _report_progress(progress, f"  output_dir: {resolved_output_dir}")
+    _report_progress(progress, f"  fp32_checkpoint: {fp32_checkpoint_path}")
+    torch.save(_cpu_state_dict(model), str(fp32_checkpoint_path))
+    _report_progress(progress, "  quantization: signed int8 per-tensor")
+    int8_state, scale_metadata = quantize_cifar_resnet20_state_dict(model)
+    _report_progress(progress, f"  int8_checkpoint: {int8_checkpoint_path}")
+    torch.save(int8_state, str(int8_checkpoint_path))
+    _report_progress(progress, f"  scale_metadata: {scale_path}")
+    write_per_tensor_scale_metadata(scale_metadata, scale_path)
+    _report_progress(progress, "  validation: loading quantized artifact")
+    load_cifar_resnet20_quantized_artifact(
+        checkpoint_path=int8_checkpoint_path,
+        scale_path=scale_path,
+    )
+    _report_progress(progress, "")
+    _report_progress(progress, "== Done ==")
+
+    return CifarResNet20ArtifactPreparationOutput(
+        fp32_checkpoint_path=fp32_checkpoint_path,
+        int8_checkpoint_path=int8_checkpoint_path,
+        scale_path=scale_path,
+        evaluation_metrics=evaluation_metrics,
+        device=str(resolved_device),
+        epochs=epochs,
+    )
+
+
+def quantize_cifar_resnet20_state_dict(
+    model: CifarResNet20Model,
+) -> tuple[dict[str, Any], PerTensorScaleMetadata]:
+    """Return a BFA-compatible int8 state dict and scale metadata for a model."""
+    torch = _require_pytorch()
+    state = _state_dict_mapping(model)
+    perturbable_tensor_names = set(_perturbable_weight_tensor_names(model))
+    quantized_state: dict[str, Any] = {}
+    scale_tensors: dict[str, PerTensorScale] = {}
+
+    for tensor_name, tensor in state.items():
+        detached_tensor = _clone_detached_tensor(tensor)
+        if tensor_name not in perturbable_tensor_names:
+            quantized_state[tensor_name] = _cpu_tensor_clone(detached_tensor)
+            continue
+
+        cpu_tensor = _cpu_tensor_clone(detached_tensor).float()
+        scale = _per_tensor_int8_scale(cpu_tensor, tensor_name=tensor_name, torch=torch)
+        quantized_tensor = _quantize_tensor_to_int8(
+            cpu_tensor,
+            scale=scale,
+            torch=torch,
+        )
+        quantized_state[tensor_name] = quantized_tensor
+        scale_tensors[tensor_name] = PerTensorScale(
+            tensor_name=tensor_name,
+            scale=scale,
+            shape=_tensor_shape(quantized_tensor),
+            dtype="int8",
+        )
+
+    return (
+        quantized_state,
+        PerTensorScaleMetadata(
+            codec=SIGNED_INT8_TWO_COMPLEMENT_CODEC,
+            scale_granularity=PER_TENSOR_SCALE_GRANULARITY,
+            tensors=scale_tensors,
+        ),
+    )
+
+
+def write_per_tensor_scale_metadata(
+    metadata: PerTensorScaleMetadata,
+    path: str | PathLike[str],
+) -> Path:
+    """Write per-tensor scale metadata as validated JSON."""
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_metadata = {
+        "codec": metadata.codec,
+        "scale_granularity": metadata.scale_granularity,
+        "tensors": {
+            tensor_name: {
+                "scale": tensor.scale,
+                "shape": list(tensor.shape) if tensor.shape is not None else None,
+                "dtype": tensor.dtype,
+            }
+            for tensor_name, tensor in metadata.tensors.items()
+        },
+    }
+    output_path.write_text(
+        json.dumps(raw_metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    load_per_tensor_scale_metadata(output_path)
+    return output_path
 
 
 def load_cifar_resnet20_quantized_artifact(
@@ -186,7 +480,7 @@ def load_cifar_resnet20_quantized_artifact(
     _load_validated_checkpoint_state(
         model,
         checkpoint_state,
-        quantized_tensor_names=quantization.tensors.keys(),
+        quantization=quantization,
         torch=torch,
     )
 
@@ -602,6 +896,317 @@ def _load_cifar10_dataset(
         raise FileNotFoundError(msg) from exc
 
 
+def _build_cifar10_training_dataloader(
+    *,
+    root: str | PathLike[str],
+    batch_size: int,
+    download: bool,
+    sample_limit: int | None,
+    num_workers: int,
+) -> Any:
+    root_path = Path(root)
+    if not download and not root_path.exists():
+        msg = (
+            "CIFAR-10 training dataset root does not exist: "
+            f"{root_path}. Set download=True only when automatic download is intended."
+        )
+        raise FileNotFoundError(msg)
+    torchvision = _require_torchvision()
+    torch = _require_pytorch()
+    dataset = torchvision.datasets.CIFAR10(
+        root=str(root_path),
+        train=True,
+        transform=_make_cifar10_training_transform(torchvision),
+        download=download,
+    )
+    if sample_limit is not None:
+        dataset = torch.utils.data.Subset(
+            dataset,
+            range(min(sample_limit, len(dataset))),
+        )
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=False,
+    )
+
+
+def _train_cifar_resnet20_epoch(
+    model: CifarResNet20Model,
+    dataloader: Any,
+    *,
+    optimizer: Any,
+    torch: Any,
+    device: str,
+    progress: ProgressReporter | None,
+    epoch_index: int,
+    epochs: int,
+    learning_rate: float,
+) -> dict[str, float]:
+    train = getattr(model, "train", None)
+    if callable(train):
+        train()
+    sample_count = 0
+    correct = 0
+    loss_sum = 0.0
+    batch_count = _len_or_none(dataloader)
+    for batch_index, (inputs, targets) in enumerate(dataloader, start=1):
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+        optimizer.zero_grad(set_to_none=True)
+        outputs = model(inputs)
+        batch_size = int(targets.shape[0])
+        batch_loss = torch.nn.functional.cross_entropy(
+            outputs,
+            targets,
+            reduction="sum",
+        )
+        loss = batch_loss / batch_size
+        loss.backward()
+        optimizer.step()
+        predictions = outputs.argmax(dim=1)
+        correct += int((predictions == targets).sum().item())
+        sample_count += batch_size
+        loss_sum += float(batch_loss.item())
+        _report_progress(
+            progress,
+            "\r"
+            + _training_batch_progress_message(
+                epoch_index=epoch_index,
+                epochs=epochs,
+                batch_index=batch_index,
+                batch_count=batch_count,
+                learning_rate=learning_rate,
+                loss=loss_sum / sample_count,
+                top1_accuracy=correct / sample_count,
+            ),
+        )
+    if sample_count == 0:
+        msg = "CIFAR-10 training requires at least one sample"
+        raise ValueError(msg)
+    _report_progress(progress, "")
+    return {
+        "loss": loss_sum / sample_count,
+        "top1_accuracy": correct / sample_count,
+    }
+
+
+def _validate_artifact_preparation_settings(
+    *,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    schedule: tuple[int, ...],
+    gammas: tuple[float, ...],
+    momentum: float,
+    weight_decay: float,
+    train_sample_limit: int | None,
+    evaluation_sample_limit: int | None,
+    num_workers: int,
+) -> None:
+    if epochs < 0:
+        msg = "epochs must be greater than or equal to 0"
+        raise ValueError(msg)
+    if batch_size <= 0:
+        msg = "batch_size must be greater than 0"
+        raise ValueError(msg)
+    if not isfinite(learning_rate) or learning_rate <= 0:
+        msg = "learning_rate must be a finite positive number"
+        raise ValueError(msg)
+    if len(schedule) != len(gammas):
+        msg = "schedule and gammas must contain the same number of values"
+        raise ValueError(msg)
+    previous_milestone = -1
+    for milestone in schedule:
+        if milestone <= previous_milestone:
+            msg = "schedule milestones must be strictly increasing"
+            raise ValueError(msg)
+        previous_milestone = milestone
+    for gamma in gammas:
+        if not isfinite(gamma) or gamma <= 0:
+            msg = "gammas must be finite positive numbers"
+            raise ValueError(msg)
+    if not isfinite(momentum) or momentum < 0:
+        msg = "momentum must be a finite non-negative number"
+        raise ValueError(msg)
+    if not isfinite(weight_decay) or weight_decay < 0:
+        msg = "weight_decay must be a finite non-negative number"
+        raise ValueError(msg)
+    if train_sample_limit is not None and train_sample_limit <= 0:
+        msg = "train_sample_limit must be greater than 0 when provided"
+        raise ValueError(msg)
+    if evaluation_sample_limit is not None and evaluation_sample_limit <= 0:
+        msg = "evaluation_sample_limit must be greater than 0 when provided"
+        raise ValueError(msg)
+    if num_workers < 0:
+        msg = "num_workers must be greater than or equal to 0"
+        raise ValueError(msg)
+
+
+def _apply_learning_rate_schedule(
+    optimizer: Any,
+    *,
+    base_learning_rate: float,
+    epoch_index: int,
+    schedule: tuple[int, ...],
+    gammas: tuple[float, ...],
+) -> float:
+    learning_rate = base_learning_rate
+    for milestone, gamma in zip(schedule, gammas, strict=True):
+        if epoch_index >= milestone:
+            learning_rate *= gamma
+    for parameter_group in optimizer.param_groups:
+        parameter_group["lr"] = learning_rate
+    return learning_rate
+
+
+def _report_progress(progress: ProgressReporter | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
+
+
+def _report_dataset_settings(
+    progress: ProgressReporter | None,
+    *,
+    root: str | PathLike[str],
+    download: bool,
+) -> None:
+    _report_progress(progress, f"  root: {Path(root)}")
+    download_description = _download_progress_description(download)
+    _report_progress(progress, f"  download: {download_description}")
+
+
+def _report_dataloader_settings(
+    progress: ProgressReporter | None,
+    dataloader: Any,
+) -> None:
+    sample_count = _len_or_unknown(getattr(dataloader, "dataset", None))
+    batch_count = _len_or_unknown(dataloader)
+    _report_progress(progress, f"  samples: {sample_count}")
+    _report_progress(progress, f"  batches: {batch_count}")
+
+
+def _download_progress_description(download: bool) -> str:
+    if download:
+        return "enabled (torchvision may show a 0-100% progress bar)"
+    return "disabled"
+
+
+def _learning_rate_schedule_description(
+    schedule: tuple[int, ...],
+    gammas: tuple[float, ...],
+) -> str:
+    if not schedule:
+        return "none"
+    return ", ".join(
+        f"epoch {milestone} x{gamma:g}"
+        for milestone, gamma in zip(schedule, gammas, strict=True)
+    )
+
+
+def _format_percent(value: float) -> str:
+    return f"{value * 100:.2f}%"
+
+
+def _training_batch_progress_message(
+    *,
+    epoch_index: int,
+    epochs: int,
+    batch_index: int,
+    batch_count: int | None,
+    learning_rate: float,
+    loss: float,
+    top1_accuracy: float,
+) -> str:
+    return (
+        f"  epoch {epoch_index + 1:03d}/{epochs:03d} "
+        f"{_batch_progress_bar(batch_index, batch_count)} "
+        f"batch={_batch_progress_count(batch_index, batch_count)} "
+        f"lr={learning_rate:.6g} "
+        f"loss={loss:.6g} "
+        f"top1={_format_percent(top1_accuracy)}"
+    )
+
+
+def _batch_progress_bar(batch_index: int, batch_count: int | None) -> str:
+    if batch_count is None or batch_count <= 0:
+        return "[????????????????????]"
+    width = 20
+    completed = min(width, int(width * batch_index / batch_count))
+    remaining = width - completed
+    return "[" + ("#" * completed) + ("-" * remaining) + "]"
+
+
+def _batch_progress_count(batch_index: int, batch_count: int | None) -> str:
+    if batch_count is None:
+        return f"{batch_index}/?"
+    return f"{batch_index}/{batch_count}"
+
+
+def _len_or_unknown(value: Any) -> str:
+    try:
+        return str(len(value))
+    except TypeError:
+        return "unknown"
+
+
+def _len_or_none(value: Any) -> int | None:
+    try:
+        return len(value)
+    except TypeError:
+        return None
+
+
+def _cpu_state_dict(model: CifarResNet20Model) -> dict[str, Any]:
+    return {
+        tensor_name: _cpu_tensor_clone(tensor)
+        for tensor_name, tensor in _state_dict_mapping(model).items()
+    }
+
+
+def _cpu_tensor_clone(tensor: Any) -> Any:
+    detach = getattr(tensor, "detach", None)
+    if callable(detach):
+        tensor = detach()
+    cpu = getattr(tensor, "cpu", None)
+    if callable(cpu):
+        tensor = cpu()
+    clone = getattr(tensor, "clone", None)
+    if callable(clone):
+        return clone()
+    return tensor
+
+
+def _per_tensor_int8_scale(tensor: Any, *, tensor_name: str, torch: Any) -> float:
+    if bool(torch.isnan(tensor).any()) or bool(torch.isinf(tensor).any()):
+        msg = f"tensor {tensor_name!r} contains non-finite values"
+        raise ValueError(msg)
+    max_abs = float(tensor.abs().max().item())
+    if max_abs == 0.0:
+        return 1.0
+    return max_abs / 127.0
+
+
+def _quantize_tensor_to_int8(tensor: Any, *, scale: float, torch: Any) -> Any:
+    scaled = tensor / scale
+    rounded = torch.sign(scaled) * torch.floor(torch.abs(scaled) + 0.5)
+    return torch.clamp(rounded, -128, 127).to(torch.int8)
+
+
+def _make_cifar10_training_transform(torchvision: Any) -> Any:
+    transforms = torchvision.transforms
+    return transforms.Compose(
+        [
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(CIFAR10_NORMALIZATION_MEAN, CIFAR10_NORMALIZATION_STD),
+        ]
+    )
+
+
 def _require_metadata_string(metadata: Mapping[str, Any], key: str) -> str:
     value = metadata.get(key)
     if not isinstance(value, str) or not value:
@@ -865,10 +1470,10 @@ def _load_validated_checkpoint_state(
     model: Any,
     checkpoint_state: Mapping[str, Any],
     *,
-    quantized_tensor_names: Iterable[str],
+    quantization: PerTensorScaleMetadata,
     torch: Any,
 ) -> None:
-    quantized_names = set(quantized_tensor_names)
+    quantized_names = set(quantization.tensors)
     load_state_dict = getattr(model, "load_state_dict", None)
     if not callable(load_state_dict):
         msg = "CIFAR-10 ResNet-20 model must provide callable load_state_dict"
@@ -889,6 +1494,7 @@ def _load_validated_checkpoint_state(
             model,
             tensor_name,
             checkpoint_state[tensor_name],
+            scale=quantization.scale_for(tensor_name),
             torch=torch,
         )
 
@@ -898,6 +1504,7 @@ def _replace_module_state_tensor(
     tensor_name: str,
     tensor: Any,
     *,
+    scale: float | None = None,
     torch: Any,
 ) -> None:
     module, attribute_name = _resolve_state_tensor_parent(model, tensor_name)
@@ -905,6 +1512,8 @@ def _replace_module_state_tensor(
     if _is_model_parameter_name(model, tensor_name):
         parameter = torch.nn.Parameter(clone, requires_grad=False)
         setattr(module, attribute_name, parameter)
+        if attribute_name == "weight" and _is_signed_int8_dtype(_tensor_dtype(clone)):
+            _install_int8_weight_forward(module, scale=scale, torch=torch)
         return
     register_buffer = getattr(module, "register_buffer", None)
     if callable(register_buffer):
@@ -940,6 +1549,93 @@ def _clone_detached_tensor(tensor: Any) -> Any:
     if callable(clone):
         return clone()
     return tensor
+
+
+def _install_int8_weight_forward(
+    module: Any,
+    *,
+    scale: float | None,
+    torch: Any,
+) -> None:
+    if scale is None:
+        msg = "quantized int8 weight forward requires a per-tensor scale"
+        raise ValueError(msg)
+
+    nn = getattr(torch, "nn", None)
+    conv2d_type = getattr(nn, "Conv2d", ())
+    linear_type = getattr(nn, "Linear", ())
+    batchnorm2d_type = getattr(nn, "BatchNorm2d", ())
+    functional = getattr(nn, "functional", None)
+    if functional is None:
+        return
+
+    if isinstance(module, conv2d_type):
+        _preserve_original_forward(module)
+
+        def conv2d_forward(inputs: Any) -> Any:
+            return functional.conv2d(
+                inputs,
+                _dequantized_int8_weight(module, scale=scale),
+                module.bias,
+                module.stride,
+                module.padding,
+                module.dilation,
+                module.groups,
+            )
+
+        module.forward = conv2d_forward
+        return
+
+    if isinstance(module, linear_type):
+        _preserve_original_forward(module)
+
+        def linear_forward(inputs: Any) -> Any:
+            return functional.linear(
+                inputs,
+                _dequantized_int8_weight(module, scale=scale),
+                module.bias,
+            )
+
+        module.forward = linear_forward
+        return
+
+    if isinstance(module, batchnorm2d_type):
+        _preserve_original_forward(module)
+
+        def batchnorm2d_forward(inputs: Any) -> Any:
+            return functional.batch_norm(
+                inputs,
+                module.running_mean,
+                module.running_var,
+                _dequantized_int8_weight(module, scale=scale),
+                module.bias,
+                module.training,
+                module.momentum,
+                module.eps,
+            )
+
+        module.forward = batchnorm2d_forward
+
+
+def _preserve_original_forward(module: Any) -> None:
+    if hasattr(module, "_netflip_original_forward"):
+        return
+    original_forward = getattr(module, "forward", None)
+    if original_forward is not None:
+        module._netflip_original_forward = original_forward
+
+
+def _dequantized_int8_weight(module: Any, *, scale: float) -> Any:
+    """Dequantize a symmetrically quantized int8 weight tensor."""
+    weight_zero_point = getattr(module, "weight_zero_point", 0)
+    if weight_zero_point != 0:
+        msg = (
+            "_dequantized_int8_weight only supports symmetric per-tensor "
+            "quantization with zero_point=0; got "
+            f"weight_zero_point={weight_zero_point!r}"
+        )
+        raise ValueError(msg)
+    return module.weight.float() * scale
 
 
 def _tensor_shape(tensor: Any) -> tuple[int, ...]:

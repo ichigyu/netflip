@@ -3,11 +3,15 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from netflip.benchmarks import (
+    CifarResNet20ArtifactPreparationOutput,
     CifarResNet20QuantizedArtifact,
     PerTensorScale,
     PerTensorScaleMetadata,
     load_cifar_resnet20_quantized_artifact,
     load_per_tensor_scale_metadata,
+    prepare_cifar_resnet20_artifacts,
+    quantize_cifar_resnet20_state_dict,
+    write_per_tensor_scale_metadata,
 )
 from netflip.bfa_pbs import (
     ATTACK_BUDGET_STOP_REASON,
@@ -138,6 +142,7 @@ __all__ = [
     "BitRole",
     "CandidateTraceEntry",
     "CheckpointSpec",
+    "CifarResNet20ArtifactPreparationOutput",
     "CifarResNet20QuantizedArtifact",
     "DatasetSpec",
     "EligibleBitPopulation",
@@ -171,6 +176,8 @@ __all__ = [
     "load_experiment_spec",
     "load_per_tensor_scale_metadata",
     "parse_experiment_spec",
+    "prepare_cifar_resnet20_artifacts",
+    "quantize_cifar_resnet20_state_dict",
     "resolve_torch_device",
     "run_bfa_pbs_attack_strategy",
     "run_uniform_random_soft_error_baseline",
@@ -178,6 +185,7 @@ __all__ = [
     "score_bfa_pbs_candidates",
     "validate_bfa_pbs_scenario_config",
     "write_candidate_trace",
+    "write_per_tensor_scale_metadata",
     "write_perturbation_trace",
     "write_run_manifest",
     "write_run_summary",

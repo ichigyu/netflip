@@ -36,9 +36,14 @@ def group_dependencies(*groups: str) -> list[str]:
     return dependencies
 
 
-def install_package(session: nox.Session, *groups: str) -> None:
+def install_package(
+    session: nox.Session,
+    *groups: str,
+    extras: tuple[str, ...] = (),
+) -> None:
     session.install(*group_dependencies(*groups))
-    session.install("--editable", ".")
+    package = ".[{}]".format(",".join(extras)) if extras else "."
+    session.install("--editable", package)
 
 
 @nox.session(python=PYTHON_VERSIONS)
@@ -58,7 +63,7 @@ def doctests(session: nox.Session) -> None:
 @nox.session(python="3.11")
 def coverage(session: nox.Session) -> None:
     """Run pytest and write terminal and XML coverage reports."""
-    install_package(session, "test")
+    install_package(session, "test", extras=("benchmark",))
     session.run("coverage", "run", "-m", "pytest", *session.posargs)
     session.run("coverage", "xml")
     session.run("coverage", "report")

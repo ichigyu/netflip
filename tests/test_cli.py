@@ -227,6 +227,91 @@ def test_cli_run_prints_candidate_trace_path_when_present(
     assert f"Candidate trace: {candidate_trace_path}" in result.output
 
 
+def test_cli_prepare_cifar10_resnet20_prints_artifact_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.console as console_module
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_prepare_cifar_resnet20_artifacts(**kwargs: Any) -> SimpleNamespace:
+        calls.append(kwargs)
+        kwargs["progress"]("== Training ==")
+        kwargs["progress"]("  001/001       0.1          1   50.00%")
+        return SimpleNamespace(
+            fp32_checkpoint_path=tmp_path / "resnet20-fp32.pt",
+            int8_checkpoint_path=tmp_path / "resnet20-int8.pt",
+            scale_path=tmp_path / "resnet20-int8-scales.json",
+            evaluation_metrics={
+                "top1_accuracy": 0.2,
+                "cross_entropy": 1.75,
+            },
+            device="cpu",
+            epochs=0,
+        )
+
+    monkeypatch.setattr(
+        console_module,
+        "prepare_cifar_resnet20_artifacts",
+        fake_prepare_cifar_resnet20_artifacts,
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "prepare-cifar10-resnet20",
+            "--dataset-root",
+            str(tmp_path / "data"),
+            "--output-dir",
+            str(tmp_path),
+            "--epochs",
+            "0",
+            "--batch-size",
+            "4",
+            "--train-sample-limit",
+            "4",
+            "--evaluation-sample-limit",
+            "4",
+            "--download",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert len(calls) == 1
+    assert callable(calls[0].pop("progress"))
+    assert calls == [
+        {
+            "dataset_root": str(tmp_path / "data"),
+            "output_dir": str(tmp_path),
+            "download": True,
+            "epochs": 0,
+            "batch_size": 4,
+            "learning_rate": 0.1,
+            "schedule": (80, 120),
+            "gammas": (0.1, 0.1),
+            "momentum": 0.9,
+            "weight_decay": 0.0003,
+            "train_sample_limit": 4,
+            "evaluation_sample_limit": 4,
+            "num_workers": 4,
+            "device": "cpu",
+            "rng_seed": 2026,
+        }
+    ]
+    assert "== Training ==" in result.output
+    assert "001/001" in result.output
+    assert "50.00%" in result.output
+    assert "== Prepared Artifact Summary ==" in result.output
+    assert f"fp32_checkpoint: {tmp_path / 'resnet20-fp32.pt'}" in result.output
+    assert f"int8_checkpoint: {tmp_path / 'resnet20-int8.pt'}" in result.output
+    assert f"scale_metadata: {tmp_path / 'resnet20-int8-scales.json'}" in result.output
+    assert "top1_accuracy: 0.2" in result.output
+
+
 def test_cli_run_unsupported_attack_objective_fails_clearly(tmp_path: Path) -> None:
     spec_path = tmp_path / "attack.yaml"
     spec_path.write_text(

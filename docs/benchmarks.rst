@@ -62,16 +62,75 @@ Checkpoint Preparation
 The benchmark expects a CIFAR-10 ResNet-20 checkpoint whose persistent model
 state uses BFA-compatible int8 quantization:
 
-1. Train or obtain a CIFAR-10 ResNet-20 model outside NetFlip.
-2. Quantize weights to signed int8 two's-complement values with per-tensor
-   scale metadata.
-3. Save the model state dictionary at ``model.checkpoint.path``.
-4. Save quantization scale metadata at ``model.quantization.scale_path``.
-5. Point ``dataset.root`` at the CIFAR-10 data used for selection and
-   evaluation splits.
+.. code-block:: bash
 
-The production training pipeline and external model zoo integration are outside
-the MVP Benchmark scope.
+   uv run netflip prepare-cifar10-resnet20 --download
+
+The command uses the benchmark's ``build_cifar_resnet20`` constructor, trains
+the FP32 ResNet-20 model, writes an intermediate FP32 checkpoint, quantizes
+perturbable ``*.weight`` tensors with BFA-Compatible Int8 Quantization, writes
+Per-Tensor Quantization Scale metadata, and validates that the emitted int8
+artifact can be loaded by ``load_cifar_resnet20_quantized_artifact``.
+When ``--download`` is used, NetFlip labels the dataset preparation phase and
+torchvision may show its own 0-100% download progress. Training emits one line
+per epoch with learning rate, training loss, and top-1 accuracy, and keeps a
+batch-level progress bar visible while each epoch is running.
+
+The default training configuration mirrors the CIFAR-10 ResNet-20 setup from
+the upstream BFA training script: 160 epochs, SGD, batch size 128, learning rate
+0.1, momentum 0.9, weight decay 0.0003, and learning rate decays at epochs 80
+and 120 with gamma 0.1 at each milestone.
+
+Default outputs match the example Experiment Specs:
+
+``checkpoints/cifar10/resnet20-fp32.pt``
+   Intermediate FP32 model state produced before quantization.
+
+``checkpoints/cifar10/resnet20-int8.pt``
+   BFA-compatible checkpoint whose perturbable weight tensors use signed int8
+   two's-complement values.
+
+``checkpoints/cifar10/resnet20-int8-scales.json``
+   Per-tensor scale metadata for each perturbable weight tensor.
+
+The local artifact directories ``data/``, ``checkpoints/``, ``runs/``, and
+``save/`` are ignored by git so downloaded datasets, trained checkpoints, and
+Run outputs are not uploaded accidentally.
+
+CIFAR-10 is downloaded only when ``--download`` is provided. Without that flag,
+``--dataset-root`` must point at an existing CIFAR-10 root:
+
+.. code-block:: bash
+
+   uv run netflip prepare-cifar10-resnet20 \
+      --dataset-root data/cifar10 \
+      --output-dir checkpoints/cifar10
+
+For a quick local smoke run, reduce the training and evaluation sample counts
+and use zero epochs to validate artifact writing without spending time on a full
+training pass:
+
+.. code-block:: bash
+
+   uv run netflip prepare-cifar10-resnet20 \
+      --download \
+      --epochs 0 \
+      --train-sample-limit 128 \
+      --evaluation-sample-limit 128
+
+``--device auto`` selects CUDA when available, then MPS, then CPU. Explicit
+``--device cuda`` and ``--device mps`` fail when the requested backend is not
+available. Increase ``--epochs`` for a useful Clean Baseline before launching a
+larger BFA/PBS Run.
+
+After the dataset and prepared artifacts exist, run the Attack Scenario:
+
+.. code-block:: bash
+
+   uv run netflip run examples/cifar10_resnet20/bfa_pbs.yaml
+
+Distributed training, external model zoo integration, and Per-Channel
+Quantization Scale support remain outside the MVP Benchmark scope.
 
 Evaluation Helpers
 ------------------
