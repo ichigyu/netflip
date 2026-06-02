@@ -180,9 +180,11 @@ def test_cli_run_soft_error_spec_writes_manifest_and_trace(
     assert manifest["run_id"] == "cli-soft-error"
     assert manifest["device"] == "cpu"
     assert manifest["rng_seeds"] == {"python": 7}
-    trace_lines = (output_dir / "perturbation_trace.jsonl").read_text(
-        encoding="utf-8"
-    ).splitlines()
+    trace_lines = (
+        (output_dir / "perturbation_trace.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     assert len(trace_lines) == 2
     assert json.loads(trace_lines[0])["scenario_type"] == "soft_error"
 

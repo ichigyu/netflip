@@ -271,9 +271,7 @@ def _dataset_request_checksum(
         "sample_limit": sample_limit,
         "split": split,
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return _sha256_bytes(encoded)
 
 
