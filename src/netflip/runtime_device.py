@@ -30,7 +30,7 @@ def resolve_torch_device(
 
 
 @overload
-def resolve_torch_device(requested: str = AUTO_DEVICE) -> ResolvedTorchDevice: ...
+def resolve_torch_device(requested: str) -> ResolvedTorchDevice: ...
 
 
 @beartype
