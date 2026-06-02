@@ -388,6 +388,286 @@ def test_prepare_cifar_resnet20_artifacts_validates_schedule(
         )
 
 
+def test_prepare_cifar_resnet20_artifacts_skips_training_when_epochs_zero(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch = pytest.importorskip("torch")
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "build_cifar10_dataloader",
+        lambda *args, **kwargs: [
+            (
+                torch.zeros(1, 3, 32, 32),
+                torch.zeros(1, dtype=torch.long),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "evaluate_classification_metrics",
+        lambda model, dataloader, *, device: {
+            "top1_accuracy": 1.0,
+            "cross_entropy": 0.5,
+        },
+    )
+    progress_messages: list[str] = []
+
+    output = prepare_cifar_resnet20_artifacts(
+        dataset_root=tmp_path,
+        output_dir=tmp_path / "checkpoints",
+        epochs=0,
+        batch_size=1,
+        device="cpu",
+        progress=progress_messages.append,
+    )
+
+    assert output.device == "cpu"
+    assert output.epochs == 0
+    assert "  skipped: epochs=0" in progress_messages
+    assert "== Training Data ==" not in progress_messages
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"epochs": -1}, "epochs"),
+        ({"batch_size": 0}, "batch_size"),
+        ({"learning_rate": 0.0}, "learning_rate"),
+        ({"learning_rate": float("nan")}, "learning_rate"),
+        ({"gammas": (0.0,)}, "gammas"),
+        ({"momentum": -0.1}, "momentum"),
+        ({"weight_decay": -0.1}, "weight_decay"),
+        ({"train_sample_limit": 0}, "train_sample_limit"),
+        ({"evaluation_sample_limit": 0}, "evaluation_sample_limit"),
+        ({"num_workers": -1}, "num_workers"),
+    ],
+)
+def test_artifact_preparation_settings_reject_invalid_values(
+    overrides: dict[str, Any],
+    message: str,
+) -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    settings: dict[str, Any] = {
+        "epochs": 1,
+        "batch_size": 1,
+        "learning_rate": 0.1,
+        "schedule": (1,),
+        "gammas": (0.1,),
+        "momentum": 0.9,
+        "weight_decay": 0.0003,
+        "train_sample_limit": 1,
+        "evaluation_sample_limit": 1,
+        "num_workers": 0,
+    }
+    settings.update(overrides)
+
+    with pytest.raises(ValueError, match=message):
+        cifar_resnet20._validate_artifact_preparation_settings(**settings)
+
+
+def test_build_cifar10_training_dataloader_uses_training_augmentation(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeCifar10Dataset:
+        def __init__(
+            self,
+            *,
+            root: str,
+            train: bool,
+            transform: Any,
+            download: bool,
+        ) -> None:
+            calls.append(
+                {
+                    "root": root,
+                    "train": train,
+                    "transform": transform,
+                    "download": download,
+                }
+            )
+
+        def __len__(self) -> int:
+            return 5
+
+    class FakeSubset:
+        def __init__(self, dataset: Any, indices: range) -> None:
+            self.dataset = dataset
+            self.indices = tuple(indices)
+
+        def __len__(self) -> int:
+            return len(self.indices)
+
+    class FakeDataLoader:
+        def __init__(
+            self,
+            dataset: Any,
+            *,
+            batch_size: int,
+            shuffle: bool,
+            num_workers: int,
+            pin_memory: bool,
+        ) -> None:
+            self.dataset = dataset
+            self.batch_size = batch_size
+            self.shuffle = shuffle
+            self.num_workers = num_workers
+            self.pin_memory = pin_memory
+
+    fake_torchvision = SimpleNamespace(
+        datasets=SimpleNamespace(CIFAR10=FakeCifar10Dataset),
+        transforms=_fake_cifar10_training_transforms(),
+    )
+    fake_torch = SimpleNamespace(
+        utils=SimpleNamespace(
+            data=SimpleNamespace(
+                DataLoader=FakeDataLoader,
+                Subset=FakeSubset,
+            )
+        )
+    )
+    monkeypatch.setattr(
+        cifar_resnet20, "_require_torchvision", lambda: fake_torchvision
+    )
+    monkeypatch.setattr(cifar_resnet20, "_require_pytorch", lambda: fake_torch)
+
+    loader = cifar_resnet20._build_cifar10_training_dataloader(
+        root=tmp_path,
+        batch_size=2,
+        download=False,
+        sample_limit=3,
+        num_workers=1,
+    )
+
+    assert loader.batch_size == 2
+    assert loader.shuffle is True
+    assert loader.num_workers == 1
+    assert loader.pin_memory is False
+    assert loader.dataset.indices == (0, 1, 2)
+    assert calls == [
+        {
+            "root": str(tmp_path),
+            "train": True,
+            "transform": [
+                ("random-crop", 32, 4),
+                "random-horizontal-flip",
+                "to-tensor",
+                ("normalize", CIFAR10_NORMALIZATION_MEAN, CIFAR10_NORMALIZATION_STD),
+            ],
+            "download": False,
+        }
+    ]
+
+
+def test_build_cifar10_training_dataloader_requires_root_without_download(
+    tmp_path: Any,
+) -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    with pytest.raises(FileNotFoundError, match="training dataset root"):
+        cifar_resnet20._build_cifar10_training_dataloader(
+            root=tmp_path / "missing",
+            batch_size=2,
+            download=False,
+            sample_limit=None,
+            num_workers=0,
+        )
+
+
+def test_training_progress_helpers_format_readable_messages() -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    optimizer = SimpleNamespace(param_groups=[{}, {}])
+
+    learning_rate = cifar_resnet20._apply_learning_rate_schedule(
+        optimizer,
+        base_learning_rate=0.1,
+        epoch_index=120,
+        schedule=(80, 120),
+        gammas=(0.1, 0.1),
+    )
+
+    assert learning_rate == pytest.approx(0.001)
+    assert optimizer.param_groups == [{"lr": learning_rate}, {"lr": learning_rate}]
+    assert cifar_resnet20._download_progress_description(True).startswith("enabled")
+    assert cifar_resnet20._learning_rate_schedule_description((), ()) == "none"
+    assert cifar_resnet20._batch_progress_bar(1, None) == "[????????????????????]"
+    assert cifar_resnet20._batch_progress_count(3, None) == "3/?"
+    assert "batch=3/?" in cifar_resnet20._training_batch_progress_message(
+        epoch_index=0,
+        epochs=1,
+        batch_index=3,
+        batch_count=None,
+        learning_rate=learning_rate,
+        loss=1.25,
+        top1_accuracy=0.5,
+    )
+
+
+def test_dequantized_int8_weight_rejects_asymmetric_zero_point() -> None:
+    torch = pytest.importorskip("torch")
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    symmetric_module = SimpleNamespace(
+        weight=torch.tensor([2, -4], dtype=torch.int8),
+        weight_zero_point=0,
+    )
+    asymmetric_module = SimpleNamespace(
+        weight=torch.tensor([2], dtype=torch.int8),
+        weight_zero_point=3,
+    )
+
+    dequantized = cifar_resnet20._dequantized_int8_weight(
+        symmetric_module,
+        scale=0.25,
+    )
+
+    assert dequantized.tolist() == [0.5, -1.0]
+    with pytest.raises(ValueError, match="zero_point=0"):
+        cifar_resnet20._dequantized_int8_weight(asymmetric_module, scale=0.25)
+
+
+def test_install_int8_weight_forward_requires_scale() -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    with pytest.raises(ValueError, match="per-tensor scale"):
+        cifar_resnet20._install_int8_weight_forward(
+            object(),
+            scale=None,
+            torch=SimpleNamespace(nn=SimpleNamespace()),
+        )
+
+
+def test_install_int8_weight_forward_preserves_original_forward() -> None:
+    torch = pytest.importorskip("torch")
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    module = torch.nn.Linear(2, 1, bias=False)
+    module.weight = torch.nn.Parameter(
+        torch.tensor([[2, -4]], dtype=torch.int8),
+        requires_grad=False,
+    )
+    original_forward = module.forward
+
+    cifar_resnet20._install_int8_weight_forward(
+        module,
+        scale=0.25,
+        torch=torch,
+    )
+
+    module_with_original_forward: Any = module
+    assert module_with_original_forward._netflip_original_forward == original_forward
+    assert module(torch.tensor([[1.0, 1.0]])).tolist() == [[-0.5]]
+
+
 def test_load_cifar_resnet20_quantized_artifact_with_fake_runtime(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -1288,6 +1568,36 @@ def _fake_cifar10_transforms() -> Any:
         @staticmethod
         def Compose(transforms: list[Any]) -> Any:
             return transforms
+
+        @staticmethod
+        def ToTensor() -> str:
+            return "to-tensor"
+
+        Normalize = FakeNormalize
+
+    return FakeTransforms
+
+
+def _fake_cifar10_training_transforms() -> Any:
+    class FakeNormalize:
+        def __init__(self, mean: Any, std: Any) -> None:
+            self.value = ("normalize", mean, std)
+
+    class FakeTransforms:
+        @staticmethod
+        def Compose(transforms: list[Any]) -> Any:
+            return [
+                transform.value if hasattr(transform, "value") else transform
+                for transform in transforms
+            ]
+
+        @staticmethod
+        def RandomCrop(size: int, *, padding: int) -> Any:
+            return ("random-crop", size, padding)
+
+        @staticmethod
+        def RandomHorizontalFlip() -> str:
+            return "random-horizontal-flip"
 
         @staticmethod
         def ToTensor() -> str:

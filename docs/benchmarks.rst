@@ -78,7 +78,7 @@ batch-level progress bar visible while each epoch is running.
 
 The default training configuration mirrors the CIFAR-10 ResNet-20 setup from
 the upstream BFA training script: 160 epochs, SGD, batch size 128, learning rate
-0.1, momentum 0.9, weight decay 0.0003, and learning-rate decays at epochs 80
+0.1, momentum 0.9, weight decay 0.0003, and learning rate decays at epochs 80
 and 120 with gamma 0.1 at each milestone.
 
 Default outputs match the example Experiment Specs:

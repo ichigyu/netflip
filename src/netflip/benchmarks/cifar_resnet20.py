@@ -359,7 +359,7 @@ def prepare_cifar_resnet20_artifacts(
         int8_checkpoint_path=int8_checkpoint_path,
         scale_path=scale_path,
         evaluation_metrics=evaluation_metrics,
-        device=resolved_device,
+        device=str(resolved_device),
         epochs=epochs,
     )
 
@@ -1570,6 +1570,7 @@ def _install_int8_weight_forward(
         return
 
     if isinstance(module, conv2d_type):
+        _preserve_original_forward(module)
 
         def conv2d_forward(inputs: Any) -> Any:
             return functional.conv2d(
@@ -1586,6 +1587,7 @@ def _install_int8_weight_forward(
         return
 
     if isinstance(module, linear_type):
+        _preserve_original_forward(module)
 
         def linear_forward(inputs: Any) -> Any:
             return functional.linear(
@@ -1598,6 +1600,7 @@ def _install_int8_weight_forward(
         return
 
     if isinstance(module, batchnorm2d_type):
+        _preserve_original_forward(module)
 
         def batchnorm2d_forward(inputs: Any) -> Any:
             return functional.batch_norm(
@@ -1614,7 +1617,24 @@ def _install_int8_weight_forward(
         module.forward = batchnorm2d_forward
 
 
+def _preserve_original_forward(module: Any) -> None:
+    if hasattr(module, "_netflip_original_forward"):
+        return
+    original_forward = getattr(module, "forward", None)
+    if original_forward is not None:
+        module._netflip_original_forward = original_forward
+
+
 def _dequantized_int8_weight(module: Any, *, scale: float) -> Any:
+    """Dequantize a symmetrically quantized int8 weight tensor."""
+    weight_zero_point = getattr(module, "weight_zero_point", 0)
+    if weight_zero_point != 0:
+        msg = (
+            "_dequantized_int8_weight only supports symmetric per-tensor "
+            "quantization with zero_point=0; got "
+            f"weight_zero_point={weight_zero_point!r}"
+        )
+        raise ValueError(msg)
     return module.weight.float() * scale
 
 
