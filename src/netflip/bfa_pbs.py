@@ -319,7 +319,7 @@ def _evaluate_objective(
     adapter: ModelAdapter,
 ) -> float:
     objective = objective_evaluator(adapter)
-    if isinstance(objective, bool) or not isinstance(objective, int | float):
+    if isinstance(objective, bool) or not isinstance(objective, (int, float)):
         msg = "BFA/PBS objective evaluator must return a numeric value"
         raise TypeError(msg)
     return float(objective)

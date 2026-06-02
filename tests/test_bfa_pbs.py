@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -18,6 +18,8 @@ from netflip import (
     score_bfa_pbs_candidates,
     validate_bfa_pbs_scenario_config,
 )
+
+_InvalidObjectiveEvaluator = Callable[[ModelAdapter], Any]
 
 
 class _TinyInt8Adapter:
@@ -77,6 +79,22 @@ def _sum_objective(adapter: ModelAdapter) -> float:
 def _sum_metric(adapter: ModelAdapter) -> dict[str, int]:
     assert isinstance(adapter, _TinyInt8Adapter)
     return {"sum": sum(adapter.values)}
+
+
+class _CustomBadObjective:
+    """Custom non-numeric objective value used by validation tests."""
+
+
+def _string_objective(adapter: ModelAdapter) -> str:
+    return "not-a-number"
+
+
+def _bool_objective(adapter: ModelAdapter) -> bool:
+    return True
+
+
+def _object_objective(adapter: ModelAdapter) -> _CustomBadObjective:
+    return _CustomBadObjective()
 
 
 def _score_dump(scores: tuple[BfaPbsCandidateScore, ...]) -> list[dict[str, Any]]:
@@ -158,6 +176,47 @@ def test_attack_stops_clearly_when_no_candidate_improves_objective() -> None:
 
     assert result.stopped_because == NO_IMPROVING_CANDIDATE_STOP_REASON
     assert result.perturbation_trace == ()
+    assert adapter.values == [0]
+
+
+@pytest.mark.parametrize(
+    "objective_evaluator",
+    [_string_objective, _bool_objective, _object_objective],
+)
+def test_candidate_scoring_rejects_invalid_objective_return_types(
+    objective_evaluator: _InvalidObjectiveEvaluator,
+) -> None:
+    adapter = _TinyInt8Adapter([0])
+
+    with pytest.raises(TypeError, match="objective evaluator must return"):
+        score_bfa_pbs_candidates(
+            adapter=adapter,
+            objective_evaluator=objective_evaluator,
+        )
+
+    assert adapter.values == [0]
+
+
+@pytest.mark.parametrize(
+    "objective_evaluator",
+    [_string_objective, _bool_objective, _object_objective],
+)
+def test_attack_run_rejects_invalid_objective_return_types(
+    objective_evaluator: _InvalidObjectiveEvaluator,
+) -> None:
+    adapter = _TinyInt8Adapter([0])
+
+    with pytest.raises(TypeError, match="objective evaluator must return"):
+        run_bfa_pbs_attack_strategy(
+            adapter=adapter,
+            objective_evaluator=objective_evaluator,
+            metric_evaluator=_sum_metric,
+            attack_objective=MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
+            target_policy=GROUND_TRUTH_TARGET_POLICY,
+            max_flip_count=1,
+            rng_seed=2026,
+        )
+
     assert adapter.values == [0]
 
 
