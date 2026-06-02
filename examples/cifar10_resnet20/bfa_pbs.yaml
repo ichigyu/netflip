@@ -1,0 +1,27 @@
+schema_version: "2026.1"
+run_id: cifar10-resnet20-bfa-pbs
+model:
+  benchmark: cifar10-resnet20
+  architecture: resnet20
+  num_classes: 10
+  checkpoint:
+    path: checkpoints/cifar10/resnet20-int8.pt
+    format: pytorch-state-dict
+  quantization:
+    codec: signed-int8-two-complement
+    scale_granularity: per-tensor
+    scale_path: checkpoints/cifar10/resnet20-int8-scales.json
+dataset:
+  name: cifar10
+  root: data/cifar10
+  selection_split: train
+  evaluation_split: test
+scenario:
+  type: attack
+  strategy_name: bfa-pbs
+  attack_objective: maximize-cross-entropy
+  target_policy: ground-truth
+  max_flip_count: 20
+  selection_batch_size: 128
+  rng_seed: 2026
+output_dir: runs/cifar10-resnet20/bfa-pbs

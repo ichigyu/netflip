@@ -10,4 +10,5 @@ approaches under a shared experiment format.
    :caption: Contents
 
    development
+   benchmarks
    api
