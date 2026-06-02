@@ -24,9 +24,9 @@ class RuntimeDeviceUnavailableError(RuntimeError):
 
 
 @overload
-def resolve_torch_device(requested: TorchDeviceRequest = AUTO_DEVICE) -> (
-    ResolvedTorchDevice
-): ...
+def resolve_torch_device(
+    requested: TorchDeviceRequest = AUTO_DEVICE,
+) -> ResolvedTorchDevice: ...
 
 
 @overload
