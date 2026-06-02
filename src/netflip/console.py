@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from netflip import __version__
+from netflip.run import ExperimentRunError, execute_experiment_run
 
 
 @click.group(
@@ -23,6 +24,14 @@ def main(ctx: click.Context) -> None:
 @click.argument("spec")
 def run(spec: str) -> None:
     """Run an experiment spec."""
-    raise click.ClickException(
-        f"The 'run' command is planned but not implemented yet (received spec: {spec})."
-    )
+    try:
+        output = execute_experiment_run(spec)
+    except ExperimentRunError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Run output directory: {output.output_dir}")
+    click.echo(f"Manifest: {output.manifest_path}")
+    click.echo(f"Perturbation trace: {output.perturbation_trace_path}")
+    click.echo(f"Resolved device: {output.device}")
+    click.echo(f"Committed flip count: {output.flip_count}")
+    click.echo(f"Stopped because: {output.stopped_because}")
