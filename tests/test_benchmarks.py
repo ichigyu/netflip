@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterable
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -392,18 +394,22 @@ def test_prepare_cifar_resnet20_artifacts_skips_training_when_epochs_zero(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    torch = pytest.importorskip("torch")
     import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
 
     monkeypatch.setattr(
         cifar_resnet20,
+        "_require_pytorch",
+        lambda: _fake_artifact_preparation_torch(),
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "build_cifar_resnet20",
+        lambda: _FakeArtifactPreparationModel(),
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
         "build_cifar10_dataloader",
-        lambda *args, **kwargs: [
-            (
-                torch.zeros(1, 3, 32, 32),
-                torch.zeros(1, dtype=torch.long),
-            )
-        ],
+        lambda *args, **kwargs: _FakeSizedDataloader(sample_count=1, batch_count=1),
     )
     monkeypatch.setattr(
         cifar_resnet20,
@@ -412,6 +418,26 @@ def test_prepare_cifar_resnet20_artifacts_skips_training_when_epochs_zero(
             "top1_accuracy": 1.0,
             "cross_entropy": 0.5,
         },
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "_cpu_state_dict",
+        lambda model: {"features.weight": "fp32"},
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "quantize_cifar_resnet20_state_dict",
+        lambda model: ({"features.weight": "int8"}, object()),
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "write_per_tensor_scale_metadata",
+        lambda metadata, path: Path(path).write_text("{}", encoding="utf-8"),
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "load_cifar_resnet20_quantized_artifact",
+        lambda **kwargs: object(),
     )
     progress_messages: list[str] = []
 
@@ -428,6 +454,161 @@ def test_prepare_cifar_resnet20_artifacts_skips_training_when_epochs_zero(
     assert output.epochs == 0
     assert "  skipped: epochs=0" in progress_messages
     assert "== Training Data ==" not in progress_messages
+
+
+def test_prepare_cifar_resnet20_artifacts_runs_training_with_fake_runtime(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    fake_torch = _fake_artifact_preparation_torch()
+    model = _FakeArtifactPreparationModel()
+    train_loader = _FakeSizedDataloader(sample_count=3, batch_count=2)
+    evaluation_loader = _FakeSizedDataloader(sample_count=2, batch_count=1)
+    training_calls: list[dict[str, Any]] = []
+    saved_states: list[tuple[dict[str, str], str]] = []
+
+    def fake_train_epoch(**kwargs: Any) -> dict[str, float]:
+        training_calls.append(kwargs)
+        return {"loss": 0.75, "top1_accuracy": 2 / 3}
+
+    def fake_save(state: dict[str, str], path: str) -> None:
+        saved_states.append((state, path))
+        Path(path).write_text(str(state), encoding="utf-8")
+
+    fake_torch.save = fake_save
+    monkeypatch.setattr(cifar_resnet20, "_require_pytorch", lambda: fake_torch)
+    monkeypatch.setattr(cifar_resnet20, "build_cifar_resnet20", lambda: model)
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "_build_cifar10_training_dataloader",
+        lambda **kwargs: train_loader,
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "_train_cifar_resnet20_epoch",
+        lambda *args, **kwargs: fake_train_epoch(**kwargs),
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "build_cifar10_dataloader",
+        lambda *args, **kwargs: evaluation_loader,
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "evaluate_classification_metrics",
+        lambda model, dataloader, *, device: {
+            "top1_accuracy": 0.5,
+            "cross_entropy": 1.25,
+        },
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "_cpu_state_dict",
+        lambda model: {"features.weight": "fp32"},
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "quantize_cifar_resnet20_state_dict",
+        lambda model: ({"features.weight": "int8"}, object()),
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "write_per_tensor_scale_metadata",
+        lambda metadata, path: Path(path).write_text("{}", encoding="utf-8"),
+    )
+    monkeypatch.setattr(
+        cifar_resnet20,
+        "load_cifar_resnet20_quantized_artifact",
+        lambda **kwargs: object(),
+    )
+    progress_messages: list[str] = []
+
+    output = prepare_cifar_resnet20_artifacts(
+        dataset_root=tmp_path / "data",
+        output_dir=tmp_path / "checkpoints",
+        download=True,
+        epochs=2,
+        batch_size=4,
+        learning_rate=0.1,
+        schedule=(1,),
+        gammas=(0.5,),
+        device="cpu",
+        progress=progress_messages.append,
+    )
+
+    assert fake_torch.manual_seed_calls == [2026]
+    assert model.devices == ["cpu"]
+    assert len(training_calls) == 2
+    assert [call["learning_rate"] for call in training_calls] == [0.1, 0.05]
+    assert saved_states == [
+        ({"features.weight": "fp32"}, str(output.fp32_checkpoint_path)),
+        ({"features.weight": "int8"}, str(output.int8_checkpoint_path)),
+    ]
+    assert output.evaluation_metrics == {
+        "top1_accuracy": 0.5,
+        "cross_entropy": 1.25,
+    }
+    assert "  samples: 3" in progress_messages
+    assert "  batches: 2" in progress_messages
+    assert any("002/002" in message for message in progress_messages)
+
+
+def test_train_cifar_resnet20_epoch_with_fake_runtime() -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    fake_torch = SimpleNamespace(
+        nn=SimpleNamespace(functional=SimpleNamespace(cross_entropy=_fake_train_loss))
+    )
+    model: Any = _FakeTrainModel()
+    optimizer = _FakeTrainOptimizer()
+    progress_messages: list[str] = []
+    dataloader = [
+        (
+            _FakeTrainInputs(_FakeTrainOutputs(correct=2, loss=1.0)),
+            _FakeTrainTargets(),
+        ),
+        (
+            _FakeTrainInputs(_FakeTrainOutputs(correct=1, loss=3.0)),
+            _FakeTrainTargets(),
+        ),
+    ]
+
+    metrics = cifar_resnet20._train_cifar_resnet20_epoch(
+        model,
+        dataloader,
+        optimizer=optimizer,
+        torch=fake_torch,
+        device="cpu",
+        progress=progress_messages.append,
+        epoch_index=0,
+        epochs=1,
+        learning_rate=0.1,
+    )
+
+    assert model.train_calls == 1
+    assert optimizer.zero_grad_calls == 2
+    assert optimizer.step_calls == 2
+    assert metrics == {"loss": 1.0, "top1_accuracy": 0.75}
+    assert any("batch=2/2" in message for message in progress_messages)
+
+
+def test_train_cifar_resnet20_epoch_rejects_empty_dataloader() -> None:
+    import netflip.benchmarks.cifar_resnet20 as cifar_resnet20
+
+    with pytest.raises(ValueError, match="at least one sample"):
+        cifar_resnet20._train_cifar_resnet20_epoch(
+            cast("Any", _FakeTrainModel()),
+            [],
+            optimizer=_FakeTrainOptimizer(),
+            torch=SimpleNamespace(nn=SimpleNamespace(functional=SimpleNamespace())),
+            device="cpu",
+            progress=None,
+            epoch_index=0,
+            epochs=1,
+            learning_rate=0.1,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1530,6 +1711,167 @@ def _install_fake_quantized_runtime(
         "build_cifar_resnet20",
         lambda **kwargs: fake_model,
     )
+
+
+class _FakeArtifactPreparationOptimizer:
+    def __init__(
+        self,
+        parameters: Iterable[Any],
+        *,
+        lr: float,
+        momentum: float,
+        weight_decay: float,
+    ) -> None:
+        self.parameters = tuple(parameters)
+        self.param_groups = [{"lr": lr}]
+        self.momentum = momentum
+        self.weight_decay = weight_decay
+
+
+class _FakeArtifactPreparationTorch:
+    def __init__(self) -> None:
+        self.manual_seed_calls: list[int] = []
+        self.optim = SimpleNamespace(SGD=_FakeArtifactPreparationOptimizer)
+        self.save = self._save
+
+    def manual_seed(self, seed: int) -> None:
+        self.manual_seed_calls.append(seed)
+
+    @staticmethod
+    def _save(state: Any, path: str) -> None:
+        Path(path).write_text(str(state), encoding="utf-8")
+
+
+class _FakeArtifactPreparationModel:
+    def __init__(self) -> None:
+        self.devices: list[str] = []
+
+    def to(self, device: str) -> None:
+        self.devices.append(device)
+
+    @staticmethod
+    def parameters() -> tuple[str, ...]:
+        return ("parameter",)
+
+
+class _FakeSizedDataset:
+    def __init__(self, sample_count: int) -> None:
+        self.sample_count = sample_count
+
+    def __len__(self) -> int:
+        return self.sample_count
+
+
+class _FakeSizedDataloader:
+    def __init__(self, *, sample_count: int, batch_count: int) -> None:
+        self.dataset = _FakeSizedDataset(sample_count)
+        self.batch_count = batch_count
+
+    def __len__(self) -> int:
+        return self.batch_count
+
+
+class _FakeTrainLoss:
+    def __init__(self, value: float) -> None:
+        self.value = value
+        self.backward_calls = 0
+
+    def __truediv__(self, divisor: int) -> _FakeTrainLoss:
+        assert divisor == 2
+        return self
+
+    def backward(self) -> None:
+        self.backward_calls += 1
+
+    def item(self) -> float:
+        return self.value
+
+
+class _FakeTrainComparison:
+    def __init__(self, correct: int) -> None:
+        self.correct = correct
+
+    def sum(self) -> Any:
+        return SimpleNamespace(item=lambda: self.correct)
+
+
+class _FakeTrainPredictions:
+    def __init__(self, correct: int) -> None:
+        self.correct = correct
+
+    def __eq__(self, other: object) -> Any:
+        return _FakeTrainComparison(self.correct)
+
+
+class _FakeTrainOutputs:
+    def __init__(self, *, correct: int, loss: float) -> None:
+        self.correct = correct
+        self.loss = loss
+
+    def argmax(self, *, dim: int) -> _FakeTrainPredictions:
+        assert dim == 1
+        return _FakeTrainPredictions(self.correct)
+
+
+class _FakeTrainInputs:
+    def __init__(self, outputs: _FakeTrainOutputs) -> None:
+        self.outputs = outputs
+        self.device = None
+
+    def to(self, device: str) -> _FakeTrainInputs:
+        self.device = device
+        return self
+
+
+class _FakeTrainTargets:
+    shape = (2,)
+
+    def __init__(self) -> None:
+        self.device = None
+
+    def to(self, device: str) -> _FakeTrainTargets:
+        self.device = device
+        return self
+
+
+class _FakeTrainModel:
+    def __init__(self) -> None:
+        self.train_calls = 0
+
+    def train(self) -> None:
+        self.train_calls += 1
+
+    @staticmethod
+    def __call__(inputs: _FakeTrainInputs) -> _FakeTrainOutputs:
+        return inputs.outputs
+
+
+class _FakeTrainOptimizer:
+    def __init__(self) -> None:
+        self.zero_grad_calls = 0
+        self.step_calls = 0
+
+    def zero_grad(self, *, set_to_none: bool) -> None:
+        assert set_to_none is True
+        self.zero_grad_calls += 1
+
+    def step(self) -> None:
+        self.step_calls += 1
+
+
+def _fake_train_loss(
+    outputs: _FakeTrainOutputs,
+    targets: _FakeTrainTargets,
+    *,
+    reduction: str,
+) -> _FakeTrainLoss:
+    assert targets.shape == (2,)
+    assert reduction == "sum"
+    return _FakeTrainLoss(outputs.loss)
+
+
+def _fake_artifact_preparation_torch() -> _FakeArtifactPreparationTorch:
+    return _FakeArtifactPreparationTorch()
 
 
 def _write_scale_metadata(
