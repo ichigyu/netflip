@@ -42,7 +42,7 @@ class ResNet20Config:
 class Cifar10DatasetRequest:
     """Configuration for one CIFAR-10 Dataset role."""
 
-    role: Cifar10DatasetRole
+    role: Cifar10DatasetRole | str
     root: str | PathLike[str]
     split: Literal["train", "test"]
     sample_limit: int | None = None
@@ -95,17 +95,18 @@ def build_cifar_resnet20(
 
 def build_cifar10_dataset(request: Cifar10DatasetRequest) -> Any:
     """Build a CIFAR-10 Dataset for a selection or evaluation role."""
+    role = _normalize_cifar10_dataset_role(request.role)
     if request.split not in CIFAR10_SPLITS:
         msg = f"CIFAR-10 split must be one of {CIFAR10_SPLITS}; got {request.split!r}"
         raise ValueError(msg)
     if request.sample_limit is not None and request.sample_limit < 0:
-        msg = "CIFAR-10 sample_limit must be greater than or equal to 0"
+        msg = f"CIFAR-10 {role.value} sample_limit must be greater than or equal to 0"
         raise ValueError(msg)
 
     root = Path(request.root)
     if not request.download and not root.exists():
         msg = (
-            "CIFAR-10 dataset root does not exist: "
+            f"CIFAR-10 {role.value} dataset root does not exist: "
             f"{root}. Set download=True only when automatic download is intended."
         )
         raise FileNotFoundError(msg)
@@ -113,6 +114,7 @@ def build_cifar10_dataset(request: Cifar10DatasetRequest) -> Any:
     torchvision = _require_torchvision()
     dataset = _load_cifar10_dataset(
         torchvision=torchvision,
+        role=role,
         root=root,
         split=request.split,
         download=request.download,
@@ -415,6 +417,7 @@ def _conv3x3(
 def _load_cifar10_dataset(
     *,
     torchvision: Any,
+    role: Cifar10DatasetRole,
     root: Path,
     split: Literal["train", "test"],
     download: bool,
@@ -427,11 +430,25 @@ def _load_cifar10_dataset(
             download=download,
         )
     except RuntimeError as exc:
+        if "Dataset not found" not in str(exc):
+            raise
         msg = (
-            f"CIFAR-10 {split} split was not found under dataset root {root}. "
+            f"CIFAR-10 {role.value} {split} split was not found under "
+            f"dataset root {root}. "
             "Provide an existing CIFAR-10 root or set download=True explicitly."
         )
         raise FileNotFoundError(msg) from exc
+
+
+def _normalize_cifar10_dataset_role(
+    role: Cifar10DatasetRole | str,
+) -> Cifar10DatasetRole:
+    try:
+        return Cifar10DatasetRole(role)
+    except ValueError as exc:
+        allowed_roles = tuple(role.value for role in Cifar10DatasetRole)
+        msg = f"CIFAR-10 dataset role must be one of {allowed_roles}; got {role!r}"
+        raise ValueError(msg) from exc
 
 
 def _make_cifar10_evaluation_transform(torchvision: Any) -> Any:
@@ -448,7 +465,7 @@ def _require_pytorch() -> Any:
     try:
         return import_module("torch")
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on environment
-        msg = "CIFAR-10 benchmark runtime requires PyTorch to be installed"
+        msg = "benchmark runtime requires PyTorch to be installed"
         raise ModuleNotFoundError(msg) from exc
 
 
