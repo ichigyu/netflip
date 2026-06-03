@@ -191,22 +191,23 @@ def test_run_reports_soft_error_progress() -> None:
         progress=messages.append,
     )
 
-    assert messages[:2] == [
+    assert messages[:3] == [
         "  eligible_bits: 16",
+        "  requested_max_flip_count: 2",
         "  max_flip_count: 2",
     ]
-    assert messages[2] == (
+    assert messages[3] == (
         "  step 001/002: sampling uniform eligible bit from 16 uncommitted bits"
     )
-    assert messages[3].startswith(
+    assert messages[4].startswith(
         "  flip 001/002: layer=features tensor=features.weight index=("
     )
-    assert " bit=" in messages[3]
-    assert " metrics=sum=" in messages[3]
-    assert messages[4] == (
+    assert " bit=" in messages[4]
+    assert " metrics=sum=" in messages[4]
+    assert messages[5] == (
         "  step 002/002: sampling uniform eligible bit from 15 uncommitted bits"
     )
-    assert messages[5].startswith(
+    assert messages[6].startswith(
         "  flip 002/002: layer=features tensor=features.weight index=("
     )
     assert messages[-1] == "  stopped: fault_budget"
@@ -261,6 +262,7 @@ def test_fault_budget_allows_zero_committed_flips() -> None:
     assert result.perturbation_trace == ()
     assert messages == [
         "  eligible_bits: 8",
+        "  requested_max_flip_count: 0",
         "  max_flip_count: 0",
         "  stopped: fault_budget",
     ]

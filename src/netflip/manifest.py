@@ -11,6 +11,7 @@ Example:
     ...     model_checkpoint_path="models/resnet20.pt",
     ...     model_checkpoint_checksum="sha256:checkpoint",
     ...     quantization_metadata={"codec": "signed-int8-two-complement"},
+    ...     scenario_metadata={"scenario_type": "soft_error"},
     ...     selection_dataset_id="cifar10-train",
     ...     selection_dataset_checksum="sha256:selection",
     ...     evaluation_dataset_id="cifar10-test",
@@ -53,6 +54,7 @@ class RunManifest(BaseModel):
     model_checkpoint_path: str = Field(min_length=1)
     model_checkpoint_checksum: str = Field(min_length=1)
     quantization_metadata: dict[str, JSONScalar]
+    scenario_metadata: dict[str, JSONScalar]
     selection_dataset_id: str = Field(min_length=1)
     selection_dataset_checksum: str = Field(min_length=1)
     evaluation_dataset_id: str = Field(min_length=1)
@@ -75,6 +77,7 @@ def build_run_manifest(
     model_checkpoint_path: str,
     model_checkpoint_checksum: str,
     quantization_metadata: Mapping[str, JSONScalar],
+    scenario_metadata: Mapping[str, JSONScalar],
     selection_dataset_id: str,
     selection_dataset_checksum: str,
     evaluation_dataset_id: str,
@@ -95,6 +98,7 @@ def build_run_manifest(
         model_checkpoint_path=model_checkpoint_path,
         model_checkpoint_checksum=model_checkpoint_checksum,
         quantization_metadata=dict(quantization_metadata),
+        scenario_metadata=dict(scenario_metadata),
         selection_dataset_id=selection_dataset_id,
         selection_dataset_checksum=selection_dataset_checksum,
         evaluation_dataset_id=evaluation_dataset_id,

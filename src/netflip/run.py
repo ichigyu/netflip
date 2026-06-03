@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from netflip import __version__
 from netflip.benchmarks import (
@@ -75,6 +75,30 @@ class UnsupportedScenarioError(ExperimentRunError):
 
 class UnsupportedBenchmarkError(ExperimentRunError):
     """Raised when ``netflip run`` cannot execute the configured benchmark."""
+
+
+class ScenarioRunResult(Protocol):
+    """Run result fields needed for manifest scenario metadata."""
+
+    @property
+    def eligible_bit_population(self) -> int:
+        """Number of bits in the Eligible Bit Population."""
+        ...
+
+    @property
+    def stopped_because(self) -> str:
+        """Stop reason recorded by the scenario run."""
+        ...
+
+    @property
+    def flip_count(self) -> int:
+        """Number of committed bit flips in this Run."""
+        ...
+
+    @property
+    def bit_flip_ratio(self) -> float:
+        """Committed Flip Count divided by the Eligible Bit Population size."""
+        ...
 
 
 def execute_experiment_run(
@@ -241,6 +265,7 @@ def execute_experiment_run(
                 spec_path=resolved_spec_path,
                 artifact=artifact,
                 device=device,
+                run_result=run_result,
             ),
             output_dir,
         )
@@ -400,6 +425,7 @@ def _build_manifest(
     spec_path: Path,
     artifact: Any,
     device: str,
+    run_result: ScenarioRunResult,
 ) -> Any:
     resolved_spec_path = spec_path.resolve()
     checkpoint_path = Path(artifact.checkpoint_path).resolve()
@@ -412,6 +438,7 @@ def _build_manifest(
         model_checkpoint_path=str(checkpoint_path),
         model_checkpoint_checksum=_file_sha256(checkpoint_path),
         quantization_metadata=_quantization_metadata(artifact),
+        scenario_metadata=_scenario_metadata(spec, run_result),
         selection_dataset_id=_dataset_id(
             spec.dataset.name,
             spec.dataset.selection_split,
@@ -440,6 +467,51 @@ def _build_manifest(
         dependencies=_dependency_versions(),
         output_schema_version=OUTPUT_SCHEMA_VERSION,
     )
+
+
+def _scenario_metadata(
+    spec: ExperimentSpec,
+    run_result: ScenarioRunResult,
+) -> dict[str, JSONScalar]:
+    metadata: dict[str, JSONScalar] = {
+        "scenario_type": spec.scenario.type,
+        "rng_seed": spec.scenario.rng_seed,
+        "eligible_bit_population": run_result.eligible_bit_population,
+        "committed_flip_count": run_result.flip_count,
+        "committed_bit_flip_ratio": run_result.bit_flip_ratio,
+        "stop_reason": run_result.stopped_because,
+    }
+    if spec.scenario.type == SOFT_ERROR_SCENARIO_TYPE:
+        fault_budget = FaultBudget(
+            max_flip_count=spec.scenario.fault_budget.max_flip_count,
+            max_bit_flip_ratio=spec.scenario.fault_budget.max_bit_flip_ratio,
+        )
+        metadata.update(
+            {
+                "fault_model": spec.scenario.fault_model,
+                "fault_schedule": spec.scenario.fault_schedule,
+                "requested_max_flip_count": spec.scenario.fault_budget.max_flip_count,
+                "requested_max_bit_flip_ratio": (
+                    spec.scenario.fault_budget.max_bit_flip_ratio
+                ),
+                "resolved_max_flip_count": fault_budget.max_steps(
+                    run_result.eligible_bit_population
+                ),
+            }
+        )
+        return metadata
+
+    metadata.update(
+        {
+            "strategy_name": spec.scenario.strategy_name,
+            "attack_objective": spec.scenario.attack_objective,
+            "target_policy": spec.scenario.target_policy,
+            "max_flip_count": spec.scenario.max_flip_count,
+            "selection_batch_size": spec.scenario.selection_batch_size,
+            "emit_candidate_trace": spec.scenario.emit_candidate_trace,
+        }
+    )
+    return metadata
 
 
 def _quantization_metadata(artifact: Any) -> dict[str, JSONScalar]:

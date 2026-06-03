@@ -243,6 +243,16 @@ def run_uniform_random_soft_error_baseline(
     population = EligibleBitPopulation.from_model_adapter(adapter)
     max_steps = fault_budget.max_steps(population.size)
     report_progress(progress, f"  eligible_bits: {population.size}")
+    if fault_budget.max_flip_count is not None:
+        report_progress(
+            progress,
+            f"  requested_max_flip_count: {fault_budget.max_flip_count}",
+        )
+    if fault_budget.max_bit_flip_ratio is not None:
+        report_progress(
+            progress,
+            f"  requested_max_bit_flip_ratio: {fault_budget.max_bit_flip_ratio}",
+        )
     report_progress(progress, f"  max_flip_count: {max_steps}")
     if max_steps == 0:
         report_progress(progress, f"  stopped: {FAULT_BUDGET_STOP_REASON}")

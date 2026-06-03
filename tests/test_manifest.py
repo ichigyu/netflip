@@ -22,6 +22,7 @@ def manifest_kwargs() -> dict[str, Any]:
         "model_checkpoint_path": "models/resnet20.pt",
         "model_checkpoint_checksum": "sha256:checkpoint",
         "quantization_metadata": {"codec": "signed-int8-two-complement"},
+        "scenario_metadata": {"scenario_type": "soft_error"},
         "selection_dataset_id": "cifar10-train",
         "selection_dataset_checksum": "sha256:selection",
         "evaluation_dataset_id": "cifar10-test",
@@ -81,6 +82,7 @@ def test_write_run_manifest_emits_manifest_json(tmp_path: Path) -> None:
         "quantization_metadata",
         "rng_seeds",
         "run_id",
+        "scenario_metadata",
         "selection_dataset_checksum",
         "selection_dataset_id",
     }
