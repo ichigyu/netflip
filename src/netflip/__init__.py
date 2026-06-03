@@ -21,6 +21,7 @@ from netflip.bfa_pbs import (
     GROUND_TRUTH_TARGET_POLICY,
     MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
     NO_IMPROVING_CANDIDATE_STOP_REASON,
+    BfaPbsCandidatePlan,
     BfaPbsCandidateScore,
     BfaPbsRunResult,
     ObjectiveEvaluator,
@@ -61,6 +62,10 @@ from netflip.manifest import (
 )
 from netflip.model_adapter import ModelAdapter, PerturbableTensor
 from netflip.pytorch_adapter import PyTorchModelAdapter
+from netflip.pytorch_bfa import (
+    GradientBfaPbsCandidateScorer,
+    build_gradient_bfa_pbs_candidate_scorer,
+)
 from netflip.runtime_device import (
     ResolvedTorchDevice,
     RuntimeDeviceUnavailableError,
@@ -135,6 +140,7 @@ __all__ = [
     "UINT8_MAX",
     "UNIFORM_ELIGIBLE_BIT_STRATEGY_NAME",
     "BenchmarkModelSpec",
+    "BfaPbsCandidatePlan",
     "BfaPbsCandidateScore",
     "BfaPbsRunResult",
     "BfaPbsScenarioSpec",
@@ -150,6 +156,7 @@ __all__ = [
     "FailureCriterion",
     "FaultBudget",
     "FaultBudgetSpec",
+    "GradientBfaPbsCandidateScorer",
     "MetricEvaluator",
     "ModelAdapter",
     "ObjectiveEvaluator",
@@ -169,6 +176,7 @@ __all__ = [
     "TorchDeviceRequest",
     "UniformEligibleBitSelection",
     "__version__",
+    "build_gradient_bfa_pbs_candidate_scorer",
     "build_run_manifest",
     "build_run_summary",
     "candidate_trace_path",
