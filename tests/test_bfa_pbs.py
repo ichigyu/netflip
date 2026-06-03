@@ -136,6 +136,7 @@ def test_candidate_scoring_is_deterministic_and_restores_model_state() -> None:
 
 def test_attack_commits_one_bit_per_step_and_records_trace_output() -> None:
     adapter = _TinyInt8Adapter([0])
+    progress_messages: list[str] = []
 
     result = run_bfa_pbs_attack_strategy(
         adapter=adapter,
@@ -146,6 +147,7 @@ def test_attack_commits_one_bit_per_step_and_records_trace_output() -> None:
         max_flip_count=2,
         rng_seed=2026,
         record_candidate_trace=True,
+        progress=progress_messages.append,
     )
 
     entries = result.perturbation_trace
@@ -166,6 +168,16 @@ def test_attack_commits_one_bit_per_step_and_records_trace_output() -> None:
     assert result.candidate_trace[0].objective_before == 0.0
     assert result.candidate_trace[0].eligible_bit_population == 8
     assert adapter.evaluation_depth == 0
+    assert "  eligible_bits: 8" in progress_messages
+    assert "  step 001/002: scoring 8 candidate bits" in progress_messages
+    assert any(
+        "flip 001/002" in message
+        and "layer=features" in message
+        and "bit=6" in message
+        and "metrics=sum=64" in message
+        for message in progress_messages
+    )
+    assert f"  stopped: {ATTACK_BUDGET_STOP_REASON}" in progress_messages
 
 
 def test_attack_stops_clearly_when_no_candidate_improves_objective() -> None:
@@ -241,6 +253,7 @@ def test_attack_run_stops_clearly_for_empty_eligible_bit_population(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _TinyInt8Adapter([0])
+    progress_messages: list[str] = []
     monkeypatch.setattr(
         bfa_pbs_module.EligibleBitPopulation,
         "from_model_adapter",
@@ -255,6 +268,7 @@ def test_attack_run_stops_clearly_for_empty_eligible_bit_population(
         target_policy=GROUND_TRUTH_TARGET_POLICY,
         max_flip_count=1,
         rng_seed=2026,
+        progress=progress_messages.append,
     )
 
     assert result.stopped_because == ELIGIBLE_BITS_EXHAUSTED_STOP_REASON
@@ -262,6 +276,10 @@ def test_attack_run_stops_clearly_for_empty_eligible_bit_population(
     assert result.eligible_bit_population == 0
     assert result.bit_flip_ratio == 0
     assert adapter.evaluation_depth == 0
+    assert progress_messages == [
+        "  eligible_bits: 0",
+        f"  stopped: {ELIGIBLE_BITS_EXHAUSTED_STOP_REASON}",
+    ]
 
 
 def test_candidate_scoring_rejects_invalid_excluded_ordinals() -> None:

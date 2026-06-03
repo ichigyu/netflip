@@ -33,6 +33,11 @@ from netflip.manifest import (
     write_run_manifest,
 )
 from netflip.model_adapter import ModelAdapter
+from netflip.progress import (
+    ProgressReporter,
+    format_progress_metrics,
+    report_progress,
+)
 from netflip.runtime_device import RuntimeDeviceUnavailableError, resolve_torch_device
 from netflip.soft_error import (
     SOFT_ERROR_SCENARIO_TYPE,
@@ -71,9 +76,15 @@ class UnsupportedBenchmarkError(ExperimentRunError):
     """Raised when ``netflip run`` cannot execute the configured benchmark."""
 
 
-def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutput:
+def execute_experiment_run(
+    spec_path: str | PathLike[str],
+    *,
+    progress: ProgressReporter | None = None,
+) -> ExperimentRunOutput:
     """Load and execute one supported Experiment Spec."""
     resolved_spec_path = Path(spec_path).resolve()
+    report_progress(progress, "== Run Setup ==")
+    report_progress(progress, f"  spec: {resolved_spec_path}")
     try:
         spec = load_experiment_spec(resolved_spec_path)
     except (OSError, ValueError) as exc:
@@ -96,8 +107,21 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
         device = str(resolve_torch_device(spec.device))
     except (RuntimeDeviceUnavailableError, ValueError) as exc:
         raise ExperimentRunError(str(exc)) from exc
+    report_progress(progress, f"  device: {device}")
 
+    report_progress(progress, "")
+    report_progress(progress, "== Artifact ==")
+    report_progress(progress, f"  checkpoint: {spec.model.checkpoint.path}")
+    report_progress(progress, f"  scale_metadata: {spec.model.quantization.scale_path}")
     artifact = _load_benchmark_artifact(spec)
+    report_progress(progress, f"  loaded: {_artifact_progress_label(spec)}")
+
+    report_progress(progress, "")
+    report_progress(progress, "== Dataset ==")
+    report_progress(progress, f"  root: {spec.dataset.root}")
+    report_progress(progress, f"  selection_split: {spec.dataset.selection_split}")
+    report_progress(progress, f"  evaluation_split: {spec.dataset.evaluation_split}")
+    report_progress(progress, f"  batch_size: {_dataloader_batch_size(spec)}")
     try:
         dataloaders = build_cifar10_dataloaders(
             root=spec.dataset.root,
@@ -110,6 +134,9 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
     except (OSError, ValueError, ModuleNotFoundError) as exc:
         raise ExperimentRunError(str(exc)) from exc
 
+    report_progress(progress, "")
+    report_progress(progress, "== Clean Baseline ==")
+    report_progress(progress, "  evaluating...")
     try:
         clean_baseline_metrics = _classification_metrics(
             artifact.model,
@@ -118,6 +145,10 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
         )
     except TypeError as exc:
         raise ExperimentRunError(str(exc)) from exc
+    report_progress(
+        progress,
+        f"  metrics: {format_progress_metrics(clean_baseline_metrics)}",
+    )
 
     def metric_evaluator(adapter: ModelAdapter) -> Mapping[str, JSONScalar]:
         return _classification_metrics(
@@ -128,6 +159,8 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
 
     try:
         if spec.scenario.type == SOFT_ERROR_SCENARIO_TYPE:
+            report_progress(progress, "")
+            report_progress(progress, "== Soft Error ==")
             fault_budget = FaultBudget(
                 max_flip_count=spec.scenario.fault_budget.max_flip_count,
                 max_bit_flip_ratio=spec.scenario.fault_budget.max_bit_flip_ratio,
@@ -139,6 +172,15 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
                 rng_seed=spec.scenario.rng_seed,
             )
         else:
+            report_progress(progress, "")
+            report_progress(progress, "== BFA/PBS Attack ==")
+            report_progress(progress, f"  objective: {spec.scenario.attack_objective}")
+            report_progress(progress, f"  target_policy: {spec.scenario.target_policy}")
+            report_progress(progress, f"  rng_seed: {spec.scenario.rng_seed}")
+            report_progress(
+                progress,
+                f"  selection_batch_size: {spec.scenario.selection_batch_size}",
+            )
             selection_batch = _first_selection_batch(dataloaders.selection)
 
             def objective_evaluator(adapter: ModelAdapter) -> float:
@@ -157,11 +199,15 @@ def execute_experiment_run(spec_path: str | PathLike[str]) -> ExperimentRunOutpu
                 max_flip_count=spec.scenario.max_flip_count,
                 rng_seed=spec.scenario.rng_seed,
                 record_candidate_trace=spec.scenario.emit_candidate_trace,
+                progress=progress,
             )
     except (TypeError, ValueError) as exc:
         raise ExperimentRunError(str(exc)) from exc
 
     output_dir = Path(spec.output_dir)
+    report_progress(progress, "")
+    report_progress(progress, "== Outputs ==")
+    report_progress(progress, f"  output_dir: {output_dir}")
     try:
         perturbation_trace_path = write_perturbation_trace(
             run_result.perturbation_trace,
@@ -229,6 +275,10 @@ def _load_benchmark_artifact(spec: ExperimentSpec) -> Any:
         )
     except (OSError, ValueError, ModuleNotFoundError) as exc:
         raise ExperimentRunError(str(exc)) from exc
+
+
+def _artifact_progress_label(spec: ExperimentSpec) -> str:
+    return f"{spec.model.benchmark}/{spec.model.architecture} quantized artifact"
 
 
 def _classification_metrics(

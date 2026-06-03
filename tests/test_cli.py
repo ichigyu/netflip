@@ -204,10 +204,16 @@ def test_cli_run_prints_candidate_trace_path_when_present(
     import netflip.console as console_module
 
     candidate_trace_path = tmp_path / "candidate_trace.jsonl"
-    monkeypatch.setattr(
-        console_module,
-        "execute_experiment_run",
-        lambda spec: SimpleNamespace(
+
+    def fake_execute_experiment_run(
+        spec: str,
+        *,
+        progress: Any | None = None,
+    ) -> SimpleNamespace:
+        if progress is not None:
+            progress("== BFA/PBS Attack ==")
+            progress("  flip 001/001: tensor=features.weight")
+        return SimpleNamespace(
             output_dir=tmp_path,
             manifest_path=tmp_path / "manifest.json",
             perturbation_trace_path=tmp_path / "perturbation_trace.jsonl",
@@ -217,14 +223,31 @@ def test_cli_run_prints_candidate_trace_path_when_present(
             device="cpu",
             flip_count=1,
             stopped_because="attack_budget",
-        ),
+        )
+
+    monkeypatch.setattr(
+        console_module,
+        "execute_experiment_run",
+        fake_execute_experiment_run,
     )
     runner = CliRunner()
 
     result = runner.invoke(main, ["run", "attack.yaml"])
 
     assert result.exit_code == 0
+    assert "== BFA/PBS Attack ==" in result.output
+    assert "  flip 001/001: tensor=features.weight" in result.output
+    assert "== Run Summary ==" in result.output
     assert f"Candidate trace: {candidate_trace_path}" in result.output
+    assert result.output.index("== BFA/PBS Attack ==") < result.output.index(
+        "  flip 001/001: tensor=features.weight"
+    )
+    assert result.output.index(
+        "  flip 001/001: tensor=features.weight"
+    ) < result.output.index("== Run Summary ==")
+    assert result.output.index("== Run Summary ==") < result.output.index(
+        f"Candidate trace: {candidate_trace_path}"
+    )
 
 
 def test_cli_prepare_cifar10_resnet20_prints_artifact_paths(
@@ -358,7 +381,11 @@ def test_cli_run_allows_unexpected_errors_to_propagate(
 ) -> None:
     import netflip.console as console_module
 
-    def broken_execute_experiment_run(spec: str) -> object:
+    def broken_execute_experiment_run(
+        spec: str,
+        *,
+        progress: Any | None = None,
+    ) -> object:
         raise RuntimeError("internal bug")
 
     monkeypatch.setattr(
