@@ -253,6 +253,7 @@ def test_attack_run_stops_clearly_for_empty_eligible_bit_population(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _TinyInt8Adapter([0])
+    progress_messages: list[str] = []
     monkeypatch.setattr(
         bfa_pbs_module.EligibleBitPopulation,
         "from_model_adapter",
@@ -267,6 +268,7 @@ def test_attack_run_stops_clearly_for_empty_eligible_bit_population(
         target_policy=GROUND_TRUTH_TARGET_POLICY,
         max_flip_count=1,
         rng_seed=2026,
+        progress=progress_messages.append,
     )
 
     assert result.stopped_because == ELIGIBLE_BITS_EXHAUSTED_STOP_REASON
@@ -274,6 +276,10 @@ def test_attack_run_stops_clearly_for_empty_eligible_bit_population(
     assert result.eligible_bit_population == 0
     assert result.bit_flip_ratio == 0
     assert adapter.evaluation_depth == 0
+    assert progress_messages == [
+        "  eligible_bits: 0",
+        f"  stopped: {ELIGIBLE_BITS_EXHAUSTED_STOP_REASON}",
+    ]
 
 
 def test_candidate_scoring_rejects_invalid_excluded_ordinals() -> None:

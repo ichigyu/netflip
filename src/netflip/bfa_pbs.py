@@ -221,7 +221,8 @@ def run_bfa_pbs_attack_strategy(
     selected_codec = codec if codec is not None else SignedInt8TwoComplementCodec()
     population = EligibleBitPopulation.from_model_adapter(adapter)
     if population.size == 0:
-        report_progress(progress, "  stopped: eligible_bits_exhausted")
+        report_progress(progress, "  eligible_bits: 0")
+        report_progress(progress, f"  stopped: {ELIGIBLE_BITS_EXHAUSTED_STOP_REASON}")
         return BfaPbsRunResult(
             perturbation_trace=(),
             stopped_because=ELIGIBLE_BITS_EXHAUSTED_STOP_REASON,

@@ -114,7 +114,7 @@ def execute_experiment_run(
     report_progress(progress, f"  checkpoint: {spec.model.checkpoint.path}")
     report_progress(progress, f"  scale_metadata: {spec.model.quantization.scale_path}")
     artifact = _load_benchmark_artifact(spec)
-    report_progress(progress, "  loaded: CIFAR-10 ResNet-20 quantized artifact")
+    report_progress(progress, f"  loaded: {_artifact_progress_label(spec)}")
 
     report_progress(progress, "")
     report_progress(progress, "== Dataset ==")
@@ -275,6 +275,10 @@ def _load_benchmark_artifact(spec: ExperimentSpec) -> Any:
         )
     except (OSError, ValueError, ModuleNotFoundError) as exc:
         raise ExperimentRunError(str(exc)) from exc
+
+
+def _artifact_progress_label(spec: ExperimentSpec) -> str:
+    return f"{spec.model.benchmark}/{spec.model.architecture} quantized artifact"
 
 
 def _classification_metrics(

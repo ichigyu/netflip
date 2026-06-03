@@ -239,6 +239,15 @@ def test_cli_run_prints_candidate_trace_path_when_present(
     assert "  flip 001/001: tensor=features.weight" in result.output
     assert "== Run Summary ==" in result.output
     assert f"Candidate trace: {candidate_trace_path}" in result.output
+    assert result.output.index("== BFA/PBS Attack ==") < result.output.index(
+        "  flip 001/001: tensor=features.weight"
+    )
+    assert result.output.index(
+        "  flip 001/001: tensor=features.weight"
+    ) < result.output.index("== Run Summary ==")
+    assert result.output.index("== Run Summary ==") < result.output.index(
+        f"Candidate trace: {candidate_trace_path}"
+    )
 
 
 def test_cli_prepare_cifar10_resnet20_prints_artifact_paths(

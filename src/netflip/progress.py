@@ -28,6 +28,8 @@ def format_progress_metrics(metrics: Mapping[str, JSONScalar]) -> str:
 
 
 def _format_progress_metric_value(value: JSONScalar) -> str:
+    if value is None:
+        return "null"
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, (int, float)):
