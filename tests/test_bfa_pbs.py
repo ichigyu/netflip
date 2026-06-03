@@ -142,11 +142,14 @@ def test_eligible_bit_population_round_trips_selection_to_ordinal() -> None:
     population = bfa_pbs_module.EligibleBitPopulation.from_model_adapter(adapter)
     selection = population.selection_from_ordinal(13)
 
-    assert population.ordinal_from_selection(
-        tensor_name=selection.tensor_name,
-        tensor_index=selection.tensor_index,
-        bit_index=selection.bit_index,
-    ) == 13
+    assert (
+        population.ordinal_from_selection(
+            tensor_name=selection.tensor_name,
+            tensor_index=selection.tensor_index,
+            bit_index=selection.bit_index,
+        )
+        == 13
+    )
 
 
 def test_attack_commits_one_bit_per_step_and_records_trace_output() -> None:

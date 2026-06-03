@@ -199,10 +199,7 @@ def _patched_dequantized_weight_proxies(
         for candidate in candidates:
             module = candidate.module
             proxy = (
-                module.weight.detach()
-                .float()
-                .mul(candidate.scale)
-                .requires_grad_(True)
+                module.weight.detach().float().mul(candidate.scale).requires_grad_(True)
             )
             proxies[candidate.tensor_name] = proxy
             originals.append((module, module.forward))
@@ -283,9 +280,8 @@ def _best_layer_candidate_plan(
         tensor_index=tuple(0 for _dimension in shape),
         bit_index=0,
     )
-    local_bit_offsets = (
-        value_ordinals.unsqueeze(1) * INT8_BIT_WIDTH
-        + torch.arange(INT8_BIT_WIDTH, device=grad_flat.device)
+    local_bit_offsets = value_ordinals.unsqueeze(1) * INT8_BIT_WIDTH + torch.arange(
+        INT8_BIT_WIDTH, device=grad_flat.device
     )
     if excluded_ordinals:
         excluded_local = [
