@@ -10,6 +10,11 @@ from typing import TypeAlias
 from netflip.int8_codec import SignedInt8TwoComplementCodec
 from netflip.manifest import JSONScalar
 from netflip.model_adapter import ModelAdapter
+from netflip.progress import (
+    ProgressReporter,
+    format_progress_metrics,
+    report_progress,
+)
 from netflip.soft_error import (
     MODEL_STATE_BITS_ARTIFACT_KIND,
     SIGNED_INT8_TWO_COMPLEMENT_REPRESENTATION,
@@ -27,7 +32,6 @@ NO_IMPROVING_CANDIDATE_STOP_REASON = "no_improving_candidate"
 ELIGIBLE_BITS_EXHAUSTED_STOP_REASON = "eligible_bits_exhausted"
 
 ObjectiveEvaluator: TypeAlias = Callable[[ModelAdapter], float]
-ProgressReporter: TypeAlias = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -217,7 +221,7 @@ def run_bfa_pbs_attack_strategy(
     selected_codec = codec if codec is not None else SignedInt8TwoComplementCodec()
     population = EligibleBitPopulation.from_model_adapter(adapter)
     if population.size == 0:
-        _report_progress(progress, "  stopped: eligible_bits_exhausted")
+        report_progress(progress, "  stopped: eligible_bits_exhausted")
         return BfaPbsRunResult(
             perturbation_trace=(),
             stopped_because=ELIGIBLE_BITS_EXHAUSTED_STOP_REASON,
@@ -228,15 +232,15 @@ def run_bfa_pbs_attack_strategy(
     candidate_entries: list[CandidateTraceEntry] = []
     total_steps = min(max_steps, population.size)
 
-    _report_progress(progress, f"  eligible_bits: {population.size}")
-    _report_progress(progress, f"  max_flip_count: {max_steps}")
+    report_progress(progress, f"  eligible_bits: {population.size}")
+    report_progress(progress, f"  max_flip_count: {max_steps}")
 
     with adapter.evaluation_mode():
         metric_before = _evaluate_metric(metric_evaluator, adapter)
 
         for step_index in range(total_steps):
             remaining_candidates = population.size - len(committed_ordinals)
-            _report_progress(
+            report_progress(
                 progress,
                 (
                     f"  step {step_index + 1:03d}/{total_steps:03d}: "
@@ -262,7 +266,7 @@ def run_bfa_pbs_attack_strategy(
                 )
             selected_score = _select_best_candidate(scores)
             if selected_score is None:
-                _report_progress(
+                report_progress(
                     progress, f"  stopped: {ELIGIBLE_BITS_EXHAUSTED_STOP_REASON}"
                 )
                 return BfaPbsRunResult(
@@ -272,7 +276,7 @@ def run_bfa_pbs_attack_strategy(
                     candidate_trace=tuple(candidate_entries),
                 )
             if selected_score.selection_score <= 0:
-                _report_progress(
+                report_progress(
                     progress, f"  stopped: {NO_IMPROVING_CANDIDATE_STOP_REASON}"
                 )
                 return BfaPbsRunResult(
@@ -313,7 +317,7 @@ def run_bfa_pbs_attack_strategy(
                     eligible_bit_population=population.size,
                 )
             )
-            _report_progress(
+            report_progress(
                 progress,
                 _committed_flip_progress_message(
                     flip_count=flip_count,
@@ -324,7 +328,7 @@ def run_bfa_pbs_attack_strategy(
             )
             metric_before = metric_after
 
-    _report_progress(progress, f"  stopped: {ATTACK_BUDGET_STOP_REASON}")
+    report_progress(progress, f"  stopped: {ATTACK_BUDGET_STOP_REASON}")
     return BfaPbsRunResult(
         perturbation_trace=tuple(entries),
         stopped_because=ATTACK_BUDGET_STOP_REASON,
@@ -351,14 +355,6 @@ def _evaluate_metric(
     return dict(metric_evaluator(adapter))
 
 
-def _report_progress(
-    progress: ProgressReporter | None,
-    message: str,
-) -> None:
-    if progress is not None:
-        progress(message)
-
-
 def _committed_flip_progress_message(
     *,
     flip_count: int,
@@ -374,23 +370,8 @@ def _committed_flip_progress_message(
         f"index={score.tensor_index} "
         f"bit={score.bit_index} "
         f"score={score.selection_score:.6g} "
-        f"metrics={_format_metrics(metric_after)}"
+        f"metrics={format_progress_metrics(metric_after)}"
     )
-
-
-def _format_metrics(metrics: dict[str, JSONScalar]) -> str:
-    return " ".join(
-        f"{metric_name}={_format_metric_value(metric_value)}"
-        for metric_name, metric_value in sorted(metrics.items())
-    )
-
-
-def _format_metric_value(value: JSONScalar) -> str:
-    if isinstance(value, bool):
-        return str(value).lower()
-    if isinstance(value, (int, float)):
-        return f"{value:.6g}"
-    return str(value)
 
 
 def _evaluate_objective(
