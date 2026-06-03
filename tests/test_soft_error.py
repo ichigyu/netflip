@@ -180,6 +180,38 @@ def test_run_commits_one_bit_per_step_and_records_trace_fields() -> None:
     assert all(adapter.metric_evaluations_in_eval_mode)
 
 
+def test_run_reports_soft_error_progress() -> None:
+    messages: list[str] = []
+
+    run_uniform_random_soft_error_baseline(
+        adapter=_Int8ListAdapter([0, 0]),
+        metric_evaluator=_sum_metric,
+        fault_budget=FaultBudget(max_flip_count=2),
+        rng_seed=7,
+        progress=messages.append,
+    )
+
+    assert messages[:2] == [
+        "  eligible_bits: 16",
+        "  max_flip_count: 2",
+    ]
+    assert messages[2] == (
+        "  step 001/002: sampling uniform eligible bit from 16 uncommitted bits"
+    )
+    assert messages[3].startswith(
+        "  flip 001/002: layer=features tensor=features.weight index=("
+    )
+    assert " bit=" in messages[3]
+    assert " metrics=sum=" in messages[3]
+    assert messages[4] == (
+        "  step 002/002: sampling uniform eligible bit from 15 uncommitted bits"
+    )
+    assert messages[5].startswith(
+        "  flip 002/002: layer=features tensor=features.weight index=("
+    )
+    assert messages[-1] == "  stopped: fault_budget"
+
+
 def test_fixed_seeds_produce_deterministic_perturbation_traces() -> None:
     assert _run_trace([0, 0, 0], seed=11) == _run_trace([0, 0, 0], seed=11)
     assert _run_trace([0, 0, 0], seed=11) != _run_trace([0, 0, 0], seed=12)
@@ -215,15 +247,42 @@ def test_run_stops_at_failure_criterion() -> None:
 
 
 def test_fault_budget_allows_zero_committed_flips() -> None:
+    messages: list[str] = []
+
     result = run_uniform_random_soft_error_baseline(
         adapter=_Int8ListAdapter([0]),
         metric_evaluator=_sum_metric,
         fault_budget=FaultBudget(max_flip_count=0),
         rng_seed=1,
+        progress=messages.append,
     )
 
     assert result.stopped_because == FAULT_BUDGET_STOP_REASON
     assert result.perturbation_trace == ()
+    assert messages == [
+        "  eligible_bits: 8",
+        "  max_flip_count: 0",
+        "  stopped: fault_budget",
+    ]
+
+
+def test_run_reports_failure_criterion_stop_progress() -> None:
+    messages: list[str] = []
+
+    def stop_after_first_flip(entry: PerturbationTraceEntry) -> bool:
+        return entry.flip_count == 1
+
+    result = run_uniform_random_soft_error_baseline(
+        adapter=_Int8ListAdapter([0, 0]),
+        metric_evaluator=_sum_metric,
+        fault_budget=FaultBudget(max_flip_count=10),
+        rng_seed=5,
+        failure_criterion=stop_after_first_flip,
+        progress=messages.append,
+    )
+
+    assert result.stopped_because == FAILURE_CRITERION_STOP_REASON
+    assert messages[-1] == "  stopped: failure_criterion"
 
 
 def test_population_rejects_models_without_eligible_int8_weight_bits() -> None:
