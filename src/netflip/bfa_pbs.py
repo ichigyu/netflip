@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from numbers import Integral
-from typing import TypeAlias
+from typing import Protocol, TypeAlias
 
 from netflip.int8_codec import SignedInt8TwoComplementCodec
 from netflip.manifest import JSONScalar
@@ -78,6 +78,55 @@ class BfaPbsCandidateScore:
             layer_name=self.layer_name,
             eligible_bit_population=eligible_bit_population,
         )
+
+
+@dataclass(frozen=True)
+class BfaPbsCandidatePlan:
+    """One BFA/PBS candidate plan, possibly containing multiple bit flips."""
+
+    scores: tuple[BfaPbsCandidateScore, ...]
+
+    def __post_init__(self) -> None:
+        if not self.scores:
+            msg = "BFA/PBS candidate plan must contain at least one score"
+            raise ValueError(msg)
+
+    @property
+    def objective_before(self) -> float:
+        """Objective value before applying this candidate plan."""
+        return self.scores[0].objective_before
+
+    @property
+    def objective_after(self) -> float:
+        """Objective value after applying this candidate plan."""
+        return self.scores[-1].objective_after
+
+    @property
+    def selection_score(self) -> float:
+        """Objective delta produced by applying this candidate plan."""
+        return self.objective_after - self.objective_before
+
+    @property
+    def first_population_ordinal(self) -> int:
+        """Stable tie-breaker ordinal for this candidate plan."""
+        return min(score.population_ordinal for score in self.scores)
+
+
+class BfaPbsCandidateScorer(Protocol):
+    """Select a reduced set of BFA/PBS Candidate Bit Flip plans."""
+
+    def __call__(
+        self,
+        *,
+        adapter: ModelAdapter,
+        objective_evaluator: ObjectiveEvaluator,
+        population: EligibleBitPopulation,
+        excluded_ordinals: frozenset[int],
+        remaining_flip_budget: int,
+        codec: SignedInt8TwoComplementCodec,
+    ) -> tuple[BfaPbsCandidatePlan, ...]:
+        """Return scored candidate plans for one BFA/PBS step."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -208,6 +257,7 @@ def run_bfa_pbs_attack_strategy(
     max_flip_count: int,
     rng_seed: int,
     record_candidate_trace: bool = False,
+    candidate_scorer: BfaPbsCandidateScorer | None = None,
     codec: SignedInt8TwoComplementCodec | None = None,
     progress: ProgressReporter | None = None,
 ) -> BfaPbsRunResult:
@@ -238,24 +288,52 @@ def run_bfa_pbs_attack_strategy(
 
     with adapter.evaluation_mode():
         metric_before = _evaluate_metric(metric_evaluator, adapter)
+        step_index = 0
 
-        for step_index in range(total_steps):
+        while len(entries) < total_steps:
             remaining_candidates = population.size - len(committed_ordinals)
-            report_progress(
-                progress,
-                (
-                    f"  step {step_index + 1:03d}/{total_steps:03d}: "
-                    f"scoring {remaining_candidates} candidate bits"
-                ),
-            )
-            scores = score_bfa_pbs_candidates(
-                adapter=adapter,
-                objective_evaluator=objective_evaluator,
-                attack_objective=attack_objective,
-                target_policy=target_policy,
-                excluded_ordinals=committed_ordinals,
-                codec=selected_codec,
-            )
+            remaining_flip_budget = total_steps - len(entries)
+            if candidate_scorer is None:
+                report_progress(
+                    progress,
+                    (
+                        f"  step {step_index + 1:03d}/{total_steps:03d}: "
+                        f"scoring {remaining_candidates} candidate bits"
+                    ),
+                )
+                scores = score_bfa_pbs_candidates(
+                    adapter=adapter,
+                    objective_evaluator=objective_evaluator,
+                    attack_objective=attack_objective,
+                    target_policy=target_policy,
+                    excluded_ordinals=committed_ordinals,
+                    codec=selected_codec,
+                )
+                candidate_plans = tuple(
+                    BfaPbsCandidatePlan(scores=(score,)) for score in scores
+                )
+            else:
+                report_progress(
+                    progress,
+                    (
+                        f"  step {step_index + 1:03d}/{total_steps:03d}: "
+                        f"selecting gradient-ranked candidates from "
+                        f"{remaining_candidates} eligible bits"
+                    ),
+                )
+                candidate_plans = candidate_scorer(
+                    adapter=adapter,
+                    objective_evaluator=objective_evaluator,
+                    population=population,
+                    excluded_ordinals=frozenset(committed_ordinals),
+                    remaining_flip_budget=remaining_flip_budget,
+                    codec=selected_codec,
+                )
+                scores = tuple(
+                    score
+                    for candidate_plan in candidate_plans
+                    for score in candidate_plan.scores
+                )
             if record_candidate_trace:
                 candidate_entries.extend(
                     score.to_trace_entry(
@@ -265,8 +343,8 @@ def run_bfa_pbs_attack_strategy(
                     )
                     for score in scores
                 )
-            selected_score = _select_best_candidate(scores)
-            if selected_score is None:
+            selected_plan = _select_best_candidate_plan(candidate_plans)
+            if selected_plan is None:
                 report_progress(
                     progress, f"  stopped: {ELIGIBLE_BITS_EXHAUSTED_STOP_REASON}"
                 )
@@ -276,7 +354,7 @@ def run_bfa_pbs_attack_strategy(
                     eligible_bit_population=population.size,
                     candidate_trace=tuple(candidate_entries),
                 )
-            if selected_score.selection_score <= 0:
+            if selected_plan.selection_score <= 0:
                 report_progress(
                     progress, f"  stopped: {NO_IMPROVING_CANDIDATE_STOP_REASON}"
                 )
@@ -286,48 +364,56 @@ def run_bfa_pbs_attack_strategy(
                     eligible_bit_population=population.size,
                     candidate_trace=tuple(candidate_entries),
                 )
+            _validate_selected_candidate_plan(
+                selected_plan,
+                remaining_flip_budget=remaining_flip_budget,
+                committed_ordinals=committed_ordinals,
+            )
 
-            adapter.write_tensor_value(
-                selected_score.tensor_name,
-                selected_score.tensor_index,
-                selected_score.value_after,
-            )
-            committed_ordinals.add(selected_score.population_ordinal)
-            metric_after = _evaluate_metric(metric_evaluator, adapter)
-            flip_count = step_index + 1
-            entries.append(
-                PerturbationTraceEntry(
-                    step_index=step_index,
-                    scenario_type=ATTACK_SCENARIO_TYPE,
-                    strategy_name=BFA_PBS_STRATEGY_NAME,
-                    artifact_kind=MODEL_STATE_BITS_ARTIFACT_KIND,
-                    tensor_name=selected_score.tensor_name,
-                    tensor_index=selected_score.tensor_index,
-                    representation=SIGNED_INT8_TWO_COMPLEMENT_REPRESENTATION,
-                    bit_index=selected_score.bit_index,
-                    bit_role=selected_score.bit_role,
-                    value_before=selected_score.value_before,
-                    value_after=selected_score.value_after,
-                    flip_count=flip_count,
-                    bit_flip_ratio=flip_count / population.size,
-                    metric_before=metric_before,
-                    metric_after=metric_after,
-                    selection_score=selected_score.selection_score,
-                    rng_seed=seed,
-                    layer_name=selected_score.layer_name,
-                    eligible_bit_population=population.size,
+            for selected_score in selected_plan.scores:
+                adapter.write_tensor_value(
+                    selected_score.tensor_name,
+                    selected_score.tensor_index,
+                    selected_score.value_after,
                 )
-            )
-            report_progress(
-                progress,
-                _committed_flip_progress_message(
-                    flip_count=flip_count,
-                    total_steps=total_steps,
-                    score=selected_score,
-                    metric_after=metric_after,
-                ),
-            )
+                committed_ordinals.add(selected_score.population_ordinal)
+            metric_after = _evaluate_metric(metric_evaluator, adapter)
+            for selected_score in selected_plan.scores:
+                flip_count = len(entries) + 1
+                entries.append(
+                    PerturbationTraceEntry(
+                        step_index=step_index,
+                        scenario_type=ATTACK_SCENARIO_TYPE,
+                        strategy_name=BFA_PBS_STRATEGY_NAME,
+                        artifact_kind=MODEL_STATE_BITS_ARTIFACT_KIND,
+                        tensor_name=selected_score.tensor_name,
+                        tensor_index=selected_score.tensor_index,
+                        representation=SIGNED_INT8_TWO_COMPLEMENT_REPRESENTATION,
+                        bit_index=selected_score.bit_index,
+                        bit_role=selected_score.bit_role,
+                        value_before=selected_score.value_before,
+                        value_after=selected_score.value_after,
+                        flip_count=flip_count,
+                        bit_flip_ratio=flip_count / population.size,
+                        metric_before=metric_before,
+                        metric_after=metric_after,
+                        selection_score=selected_plan.selection_score,
+                        rng_seed=seed,
+                        layer_name=selected_score.layer_name,
+                        eligible_bit_population=population.size,
+                    )
+                )
+                report_progress(
+                    progress,
+                    _committed_flip_progress_message(
+                        flip_count=flip_count,
+                        total_steps=total_steps,
+                        score=selected_score,
+                        metric_after=metric_after,
+                    ),
+                )
             metric_before = metric_after
+            step_index += 1
 
     report_progress(progress, f"  stopped: {ATTACK_BUDGET_STOP_REASON}")
     return BfaPbsRunResult(
@@ -347,6 +433,37 @@ def _select_best_candidate(
         scores,
         key=lambda score: (score.selection_score, -score.population_ordinal),
     )
+
+
+def _select_best_candidate_plan(
+    candidate_plans: tuple[BfaPbsCandidatePlan, ...],
+) -> BfaPbsCandidatePlan | None:
+    if not candidate_plans:
+        return None
+    return max(
+        candidate_plans,
+        key=lambda plan: (plan.selection_score, -plan.first_population_ordinal),
+    )
+
+
+def _validate_selected_candidate_plan(
+    selected_plan: BfaPbsCandidatePlan,
+    *,
+    remaining_flip_budget: int,
+    committed_ordinals: set[int],
+) -> None:
+    if len(selected_plan.scores) > remaining_flip_budget:
+        msg = "BFA/PBS candidate plan exceeds remaining Flip Count budget"
+        raise ValueError(msg)
+    seen_ordinals: set[int] = set()
+    for score in selected_plan.scores:
+        if score.population_ordinal in committed_ordinals:
+            msg = "BFA/PBS candidate plan includes an already committed bit"
+            raise ValueError(msg)
+        if score.population_ordinal in seen_ordinals:
+            msg = "BFA/PBS candidate plan includes a duplicate bit"
+            raise ValueError(msg)
+        seen_ordinals.add(score.population_ordinal)
 
 
 def _evaluate_metric(

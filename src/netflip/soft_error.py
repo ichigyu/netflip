@@ -170,6 +170,30 @@ class EligibleBitPopulation:
             bit_role=bit_metadata.role.value,
         )
 
+    def ordinal_from_selection(
+        self,
+        *,
+        tensor_name: str,
+        tensor_index: Sequence[int],
+        bit_index: int,
+    ) -> int:
+        """Map a tensor index and bit index back to a population ordinal."""
+        for eligible_tensor in self._tensors:
+            if eligible_tensor.tensor.name != tensor_name:
+                continue
+            value_ordinal = _ravel_index(
+                tensor_index,
+                eligible_tensor.tensor.shape,
+            )
+            SignedInt8TwoComplementCodec().bit_metadata(bit_index)
+            return (
+                eligible_tensor.start_bit_offset
+                + value_ordinal * INT8_BIT_WIDTH
+                + bit_index
+            )
+        msg = f"unknown eligible tensor: {tensor_name}"
+        raise KeyError(msg)
+
 
 def sample_uniform_eligible_bit(
     population: EligibleBitPopulation,
@@ -329,6 +353,28 @@ def _unravel_index(value_ordinal: int, shape: Sequence[int]) -> tuple[int, ...]:
         msg = "value_ordinal is out of bounds for tensor shape"
         raise IndexError(msg)
     return tuple(reversed(coordinates_reversed))
+
+
+def _ravel_index(tensor_index: Sequence[int], shape: Sequence[int]) -> int:
+    if not shape:
+        if tuple(tensor_index) != ():
+            msg = "tensor_index is out of bounds for scalar tensor"
+            raise IndexError(msg)
+        return 0
+
+    if len(tensor_index) != len(shape):
+        msg = "tensor_index rank does not match tensor shape"
+        raise IndexError(msg)
+
+    value_ordinal = 0
+    for coordinate, dimension in zip(tensor_index, shape, strict=True):
+        coordinate_int = _validate_non_negative_int(coordinate, "tensor_index")
+        dimension_int = _validate_positive_int(dimension, "shape dimension")
+        if coordinate_int >= dimension_int:
+            msg = "tensor_index is out of bounds for tensor shape"
+            raise IndexError(msg)
+        value_ordinal = value_ordinal * dimension_int + coordinate_int
+    return value_ordinal
 
 
 def _validate_excluded_ordinals(

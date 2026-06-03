@@ -13,10 +13,13 @@ from netflip import (
     GROUND_TRUTH_TARGET_POLICY,
     MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
     NO_IMPROVING_CANDIDATE_STOP_REASON,
+    BfaPbsCandidatePlan,
     BfaPbsCandidateScore,
     BfaPbsRunResult,
     ModelAdapter,
     PerturbableTensor,
+    PyTorchModelAdapter,
+    build_gradient_bfa_pbs_candidate_scorer,
     run_bfa_pbs_attack_strategy,
     score_bfa_pbs_candidates,
     validate_bfa_pbs_scenario_config,
@@ -134,6 +137,18 @@ def test_candidate_scoring_is_deterministic_and_restores_model_state() -> None:
     assert best_score.selection_score == 64.0
 
 
+def test_eligible_bit_population_round_trips_selection_to_ordinal() -> None:
+    adapter = _TinyInt8Adapter([0, 0])
+    population = bfa_pbs_module.EligibleBitPopulation.from_model_adapter(adapter)
+    selection = population.selection_from_ordinal(13)
+
+    assert population.ordinal_from_selection(
+        tensor_name=selection.tensor_name,
+        tensor_index=selection.tensor_index,
+        bit_index=selection.bit_index,
+    ) == 13
+
+
 def test_attack_commits_one_bit_per_step_and_records_trace_output() -> None:
     adapter = _TinyInt8Adapter([0])
     progress_messages: list[str] = []
@@ -178,6 +193,145 @@ def test_attack_commits_one_bit_per_step_and_records_trace_output() -> None:
         for message in progress_messages
     )
     assert f"  stopped: {ATTACK_BUDGET_STOP_REASON}" in progress_messages
+
+
+def test_attack_candidate_scorer_can_commit_multi_bit_plan() -> None:
+    adapter = _TinyInt8Adapter([0])
+
+    def candidate_scorer(
+        *,
+        adapter: ModelAdapter,
+        objective_evaluator: Callable[[ModelAdapter], float],
+        population: Any,
+        excluded_ordinals: frozenset[int],
+        remaining_flip_budget: int,
+        codec: Any,
+    ) -> tuple[BfaPbsCandidatePlan, ...]:
+        assert excluded_ordinals == frozenset()
+        assert remaining_flip_budget == 2
+        objective_before = objective_evaluator(adapter)
+        first_selection = population.selection_from_ordinal(6, codec=codec)
+        second_selection = population.selection_from_ordinal(5, codec=codec)
+        return (
+            BfaPbsCandidatePlan(
+                scores=(
+                    BfaPbsCandidateScore(
+                        population_ordinal=6,
+                        tensor_name=first_selection.tensor_name,
+                        tensor_index=first_selection.tensor_index,
+                        layer_name=first_selection.layer_name,
+                        bit_index=first_selection.bit_index,
+                        bit_role=first_selection.bit_role,
+                        value_before=0,
+                        value_after=64,
+                        objective_before=objective_before,
+                        objective_after=96,
+                        selection_score=96 - objective_before,
+                    ),
+                    BfaPbsCandidateScore(
+                        population_ordinal=5,
+                        tensor_name=second_selection.tensor_name,
+                        tensor_index=second_selection.tensor_index,
+                        layer_name=second_selection.layer_name,
+                        bit_index=second_selection.bit_index,
+                        bit_role=second_selection.bit_role,
+                        value_before=64,
+                        value_after=96,
+                        objective_before=objective_before,
+                        objective_after=96,
+                        selection_score=96 - objective_before,
+                    ),
+                )
+            ),
+        )
+
+    result = run_bfa_pbs_attack_strategy(
+        adapter=adapter,
+        objective_evaluator=_sum_objective,
+        metric_evaluator=_sum_metric,
+        attack_objective=MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
+        target_policy=GROUND_TRUTH_TARGET_POLICY,
+        max_flip_count=2,
+        rng_seed=2026,
+        record_candidate_trace=True,
+        candidate_scorer=candidate_scorer,
+    )
+
+    assert result.stopped_because == ATTACK_BUDGET_STOP_REASON
+    assert result.flip_count == 2
+    assert adapter.values == [96]
+    assert [entry.step_index for entry in result.perturbation_trace] == [0, 0]
+    assert [entry.flip_count for entry in result.perturbation_trace] == [1, 2]
+    assert [entry.value_after for entry in result.perturbation_trace] == [64, 96]
+    assert len(result.candidate_trace) == 2
+
+
+def test_gradient_ranked_bfa_scorer_commits_one_pytorch_candidate() -> None:
+    torch = pytest.importorskip("torch")
+
+    class TinyInt8LinearModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.classifier = torch.nn.Linear(2, 2, bias=False)
+            self.classifier.weight = torch.nn.Parameter(
+                torch.tensor([[0, 0], [0, 0]], dtype=torch.int8),
+                requires_grad=False,
+            )
+
+            def dequantized_forward(inputs: Any) -> Any:
+                return torch.nn.functional.linear(
+                    inputs,
+                    self.classifier.weight.float(),
+                    None,
+                )
+
+            self.classifier.forward = dequantized_forward
+
+        def forward(self, inputs: Any) -> Any:
+            return self.classifier(inputs)
+
+    model = TinyInt8LinearModel()
+    adapter = PyTorchModelAdapter(model)
+    inputs = torch.tensor([[1.0, 0.0]])
+    targets = torch.tensor([0])
+    scorer = build_gradient_bfa_pbs_candidate_scorer(
+        model=model,
+        selection_batch=(inputs, targets),
+        tensor_scales={"classifier.weight": 1.0},
+        device="cpu",
+    )
+    progress_messages: list[str] = []
+
+    def objective(adapter: ModelAdapter) -> float:
+        assert isinstance(adapter, PyTorchModelAdapter)
+        with torch.no_grad():
+            outputs = adapter.model(inputs)
+            loss = torch.nn.functional.cross_entropy(outputs, targets)
+        return float(loss.item())
+
+    result = run_bfa_pbs_attack_strategy(
+        adapter=adapter,
+        objective_evaluator=objective,
+        metric_evaluator=lambda adapter: {"loss": objective(adapter)},
+        attack_objective=MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
+        target_policy=GROUND_TRUTH_TARGET_POLICY,
+        max_flip_count=1,
+        rng_seed=2026,
+        candidate_scorer=scorer,
+        progress=progress_messages.append,
+    )
+
+    assert result.stopped_because == ATTACK_BUDGET_STOP_REASON
+    assert result.flip_count == 1
+    assert result.perturbation_trace[0].tensor_name == "classifier.weight"
+    selection_score = result.perturbation_trace[0].selection_score
+    assert isinstance(selection_score, (int, float))
+    assert not isinstance(selection_score, bool)
+    assert selection_score > 0
+    assert any(
+        "selecting gradient-ranked candidates" in message
+        for message in progress_messages
+    )
 
 
 def test_attack_stops_clearly_when_no_candidate_improves_objective() -> None:

@@ -38,6 +38,7 @@ from netflip.progress import (
     format_progress_metrics,
     report_progress,
 )
+from netflip.pytorch_bfa import build_gradient_bfa_pbs_candidate_scorer
 from netflip.runtime_device import RuntimeDeviceUnavailableError, resolve_torch_device
 from netflip.soft_error import (
     SOFT_ERROR_SCENARIO_TYPE,
@@ -190,6 +191,11 @@ def execute_experiment_run(
                     device=device,
                 )
 
+            candidate_scorer = _bfa_candidate_scorer_for_artifact(
+                artifact,
+                selection_batch=selection_batch,
+                device=device,
+            )
             run_result = run_bfa_pbs_attack_strategy(
                 adapter=artifact.adapter,
                 objective_evaluator=objective_evaluator,
@@ -199,6 +205,7 @@ def execute_experiment_run(
                 max_flip_count=spec.scenario.max_flip_count,
                 rng_seed=spec.scenario.rng_seed,
                 record_candidate_trace=spec.scenario.emit_candidate_trace,
+                candidate_scorer=candidate_scorer,
                 progress=progress,
             )
     except (TypeError, ValueError) as exc:
@@ -354,6 +361,36 @@ def _dataloader_batch_size(spec: ExperimentSpec) -> int:
 
 def _adapter_model(adapter: ModelAdapter, *, fallback: Any) -> Any:
     return getattr(adapter, "model", fallback)
+
+
+def _bfa_candidate_scorer_for_artifact(
+    artifact: Any,
+    *,
+    selection_batch: Any,
+    device: str,
+) -> Any:
+    quantization = getattr(artifact, "quantization", None)
+    tensors = getattr(quantization, "tensors", None)
+    if not isinstance(tensors, Mapping):
+        return None
+
+    tensor_scales: dict[str, float] = {}
+    for tensor_name, tensor in tensors.items():
+        scale = getattr(tensor, "scale", None)
+        if not isinstance(tensor_name, str) or isinstance(scale, bool):
+            return None
+        if not isinstance(scale, (int, float)):
+            return None
+        tensor_scales[tensor_name] = float(scale)
+    if not tensor_scales:
+        return None
+
+    return build_gradient_bfa_pbs_candidate_scorer(
+        model=artifact.model,
+        selection_batch=selection_batch,
+        tensor_scales=tensor_scales,
+        device=device,
+    )
 
 
 def _build_manifest(

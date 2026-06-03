@@ -25,7 +25,10 @@ Example YAML Experiment Specs are provided in ``examples/cifar10_resnet20``:
 
 ``bfa_pbs.yaml``
    An Attack Scenario skeleton for BFA/PBS with a configurable selection batch
-   size and Flip Count budget.
+   size and Flip Count budget. CIFAR-10 PyTorch artifacts use gradient-ranked
+   Progressive Bit Search in the style of the upstream BFA implementation,
+   evaluating the best Conv/Linear candidate plan per layer instead of
+   exhaustively forwarding every eligible bit.
 
 Dataset And Checkpoint Paths
 ----------------------------
@@ -128,6 +131,12 @@ After the dataset and prepared artifacts exist, run the Attack Scenario:
 .. code-block:: bash
 
    uv run netflip run examples/cifar10_resnet20/bfa_pbs.yaml
+
+For this benchmark path, each BFA/PBS step runs a selection-batch backward pass,
+evaluates the strongest Conv/Linear candidate plan per layer, and commits the
+plan whose forward pass maximizes cross entropy. If a one-bit plan does not
+increase the objective, the PyTorch scorer progressively tries larger per-layer
+plans up to the remaining Flip Count budget.
 
 Distributed training, external model zoo integration, and Per-Channel
 Quantization Scale support remain outside the MVP Benchmark scope.
