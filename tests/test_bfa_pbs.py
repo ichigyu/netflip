@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 import netflip.bfa_pbs as bfa_pbs_module
+import netflip.pytorch_bfa as pytorch_bfa_module
 from netflip import (
     ATTACK_BUDGET_STOP_REASON,
     ELIGIBLE_BITS_EXHAUSTED_STOP_REASON,
@@ -19,6 +20,7 @@ from netflip import (
     ModelAdapter,
     PerturbableTensor,
     PyTorchModelAdapter,
+    SignedInt8TwoComplementCodec,
     build_gradient_bfa_pbs_candidate_scorer,
     run_bfa_pbs_attack_strategy,
     score_bfa_pbs_candidates,
@@ -269,6 +271,68 @@ def test_attack_candidate_scorer_can_commit_multi_bit_plan() -> None:
     assert len(result.candidate_trace) == 2
 
 
+def test_candidate_plan_requires_at_least_one_score() -> None:
+    with pytest.raises(ValueError, match="candidate plan"):
+        BfaPbsCandidatePlan(scores=())
+
+
+def test_attack_stops_when_candidate_scorer_returns_no_plans() -> None:
+    adapter = _TinyInt8Adapter([0])
+
+    result = run_bfa_pbs_attack_strategy(
+        adapter=adapter,
+        objective_evaluator=_sum_objective,
+        metric_evaluator=_sum_metric,
+        attack_objective=MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
+        target_policy=GROUND_TRUTH_TARGET_POLICY,
+        max_flip_count=1,
+        rng_seed=2026,
+        candidate_scorer=lambda **kwargs: (),
+    )
+
+    assert result.stopped_because == ELIGIBLE_BITS_EXHAUSTED_STOP_REASON
+    assert result.perturbation_trace == ()
+
+
+def test_attack_rejects_candidate_plan_that_exceeds_remaining_budget() -> None:
+    adapter = _TinyInt8Adapter([0])
+
+    def oversized_scorer(**kwargs: Any) -> tuple[BfaPbsCandidatePlan, ...]:
+        population = kwargs["population"]
+        objective_before = kwargs["objective_evaluator"](adapter)
+        scores: list[BfaPbsCandidateScore] = []
+        for ordinal in (6, 5):
+            selection = population.selection_from_ordinal(ordinal)
+            scores.append(
+                BfaPbsCandidateScore(
+                    population_ordinal=ordinal,
+                    tensor_name=selection.tensor_name,
+                    tensor_index=selection.tensor_index,
+                    layer_name=selection.layer_name,
+                    bit_index=selection.bit_index,
+                    bit_role=selection.bit_role,
+                    value_before=0,
+                    value_after=64,
+                    objective_before=objective_before,
+                    objective_after=64,
+                    selection_score=64,
+                )
+            )
+        return (BfaPbsCandidatePlan(scores=tuple(scores)),)
+
+    with pytest.raises(ValueError, match="remaining Flip Count budget"):
+        run_bfa_pbs_attack_strategy(
+            adapter=adapter,
+            objective_evaluator=_sum_objective,
+            metric_evaluator=_sum_metric,
+            attack_objective=MAXIMIZE_CROSS_ENTROPY_OBJECTIVE,
+            target_policy=GROUND_TRUTH_TARGET_POLICY,
+            max_flip_count=1,
+            rng_seed=2026,
+            candidate_scorer=oversized_scorer,
+        )
+
+
 def test_gradient_ranked_bfa_scorer_commits_one_pytorch_candidate() -> None:
     torch = pytest.importorskip("torch")
 
@@ -335,6 +399,160 @@ def test_gradient_ranked_bfa_scorer_commits_one_pytorch_candidate() -> None:
         "selecting gradient-ranked candidates" in message
         for message in progress_messages
     )
+
+
+def test_pytorch_candidate_weight_modules_filter_to_int8_conv_and_linear() -> None:
+    torch = pytest.importorskip("torch")
+
+    class MixedModule(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.conv = torch.nn.Conv2d(1, 1, kernel_size=1, bias=False)
+            self.conv.weight = torch.nn.Parameter(
+                torch.tensor([[[[1]]]], dtype=torch.int8),
+                requires_grad=False,
+            )
+            self.float_linear = torch.nn.Linear(1, 1, bias=False)
+
+    model = MixedModule()
+
+    candidates = pytorch_bfa_module._candidate_weight_modules(
+        model,
+        tensor_scales={
+            "conv.weight": 0.5,
+            "float_linear.weight": 0.25,
+            "missing.weight": 0.25,
+            "conv.bias": 0.25,
+        },
+        torch=torch,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].tensor_name == "conv.weight"
+    assert candidates[0].layer_name == "conv"
+    assert candidates[0].scale == pytest.approx(0.5)
+
+
+def test_pytorch_weight_proxy_forward_supports_conv2d_and_restores_forward() -> None:
+    torch = pytest.importorskip("torch")
+    conv = torch.nn.Conv2d(1, 1, kernel_size=1, bias=False)
+    conv.weight = torch.nn.Parameter(
+        torch.tensor([[[[2]]]], dtype=torch.int8),
+        requires_grad=False,
+    )
+    original_forward = conv.forward
+    candidate = pytorch_bfa_module._CandidateWeightModule(
+        tensor_name="conv.weight",
+        layer_name="conv",
+        module=conv,
+        scale=0.5,
+    )
+
+    with pytorch_bfa_module._patched_dequantized_weight_proxies(
+        (candidate,),
+        torch=torch,
+    ) as proxies:
+        proxy = proxies["conv.weight"]
+        output = conv(torch.ones((1, 1, 1, 1)))
+        output.sum().backward()
+
+    assert output.item() == pytest.approx(1.0)
+    assert proxy.grad.item() == pytest.approx(1.0)
+    assert conv.forward == original_forward
+
+
+def test_pytorch_best_layer_candidate_plan_respects_excluded_ordinals() -> None:
+    torch = pytest.importorskip("torch")
+    adapter = _TinyInt8Adapter([0, 0])
+    population = bfa_pbs_module.EligibleBitPopulation.from_model_adapter(adapter)
+
+    class WeightHolder:
+        weight = torch.tensor([0, 0], dtype=torch.int8)
+
+    proxy = torch.tensor([1.0, 2.0], requires_grad=True)
+    proxy.grad = torch.tensor([1.0, 2.0])
+    candidate = pytorch_bfa_module._CandidateWeightModule(
+        tensor_name="features.weight",
+        layer_name="features",
+        module=WeightHolder(),
+        scale=1.0,
+    )
+
+    plan = pytorch_bfa_module._best_layer_candidate_plan(
+        candidate,
+        proxy=proxy,
+        population=population,
+        excluded_ordinals=frozenset({14}),
+        codec=SignedInt8TwoComplementCodec(),
+        torch=torch,
+        k_top=1,
+        bit_count=2,
+    )
+
+    assert plan is not None
+    assert [selection.population_ordinal for selection in plan.candidates] == [13, 12]
+    assert [selection.bit_index for selection in plan.candidates] == [5, 4]
+
+
+def test_pytorch_gradient_scorer_returns_empty_when_no_candidate_modules() -> None:
+    torch = pytest.importorskip("torch")
+    model = torch.nn.ReLU()
+    scorer = build_gradient_bfa_pbs_candidate_scorer(
+        model=model,
+        selection_batch=(torch.tensor([1.0]), torch.tensor([0])),
+        tensor_scales={"missing.weight": 1.0},
+        device="cpu",
+        k_top=1,
+    )
+    adapter = _TinyInt8Adapter([0])
+    population = bfa_pbs_module.EligibleBitPopulation.from_model_adapter(adapter)
+
+    assert (
+        scorer(
+            adapter=adapter,
+            objective_evaluator=_sum_objective,
+            population=population,
+            excluded_ordinals=frozenset(),
+            remaining_flip_budget=1,
+            codec=SignedInt8TwoComplementCodec(),
+        )
+        == ()
+    )
+
+
+def test_pytorch_gradient_scorer_validates_helper_inputs() -> None:
+    torch = pytest.importorskip("torch")
+
+    with pytest.raises(ValueError, match="k_top"):
+        build_gradient_bfa_pbs_candidate_scorer(
+            model=torch.nn.ReLU(),
+            selection_batch=(torch.tensor([1.0]), torch.tensor([0])),
+            tensor_scales={},
+            device="cpu",
+            k_top=0,
+        )
+    with pytest.raises(TypeError, match="selection batch"):
+        pytorch_bfa_module._selection_inputs_and_targets(object())
+    with pytest.raises(TypeError, match="objective evaluator"):
+        pytorch_bfa_module._evaluate_objective(
+            lambda adapter: True, _TinyInt8Adapter([0])
+        )
+    with pytest.raises(TypeError, match="candidate module"):
+        pytorch_bfa_module._make_proxy_forward(object(), proxy=object(), torch=torch)
+    with pytest.raises(IndexError, match="out of bounds"):
+        pytorch_bfa_module._unravel_index(3, (2,))
+
+
+def test_eligible_bit_population_rejects_invalid_reverse_bit_index() -> None:
+    adapter = _TinyInt8Adapter([0])
+    population = bfa_pbs_module.EligibleBitPopulation.from_model_adapter(adapter)
+
+    with pytest.raises(ValueError, match="bit_index"):
+        population.ordinal_from_selection(
+            tensor_name="features.weight",
+            tensor_index=(0,),
+            bit_index=8,
+        )
 
 
 def test_attack_stops_clearly_when_no_candidate_improves_objective() -> None:
