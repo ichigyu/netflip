@@ -19,7 +19,8 @@ def test_random_soft_error_example_spec_parses() -> None:
     assert spec.device == "auto"
     assert spec.dataset.root == "data/cifar10"
     assert spec.scenario.type == "soft_error"
-    assert spec.scenario.fault_budget.max_flip_count == 128
+    assert spec.scenario.fault_budget.max_flip_count is None
+    assert spec.scenario.fault_budget.max_bit_flip_ratio == 0.001
 
 
 def test_bfa_pbs_example_spec_parses() -> None:

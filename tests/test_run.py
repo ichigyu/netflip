@@ -4,7 +4,7 @@ import builtins
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -392,6 +392,7 @@ def test_execute_experiment_run_passes_progress_to_soft_error_run(
         return SimpleNamespace(
             perturbation_trace=(),
             flip_count=0,
+            bit_flip_ratio=0,
             stopped_because="fault_budget",
             eligible_bit_population=8,
         )
@@ -790,6 +791,15 @@ def test_build_manifest_resolves_spec_and_artifact_paths(
         spec_path=Path("soft-error.yaml"),
         artifact=artifact,
         device="cpu",
+        run_result=cast(
+            run_module.ScenarioRunResult,
+            SimpleNamespace(
+                eligible_bit_population=8,
+                flip_count=1,
+                bit_flip_ratio=1 / 8,
+                stopped_because="fault_budget",
+            ),
+        ),
     )
 
     assert manifest.model_checkpoint_path == str((tmp_path / "checkpoint.pt").resolve())
@@ -799,6 +809,9 @@ def test_build_manifest_resolves_spec_and_artifact_paths(
     assert manifest.quantization_metadata["scale_path"] == str(
         (tmp_path / "scales.json").resolve()
     )
+    assert manifest.scenario_metadata["scenario_type"] == "soft_error"
+    assert manifest.scenario_metadata["requested_max_flip_count"] == 1
+    assert manifest.scenario_metadata["resolved_max_flip_count"] == 1
 
 
 def test_json_scalar_mapping_rejects_invalid_metric_shapes() -> None:

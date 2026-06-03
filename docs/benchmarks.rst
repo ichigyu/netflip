@@ -21,7 +21,10 @@ Example YAML Experiment Specs are provided in ``examples/cifar10_resnet20``:
 
 ``random_soft_error.yaml``
    A Soft Error Scenario using a Uniform Eligible-Bit Fault Model and a
-   One-Bit Step Schedule.
+   One-Bit Step Schedule. The example uses a Bit-Flip Ratio budget so the
+   requested perturbation level scales with the Eligible Bit Population; the
+   resolved Flip Count and final Bit-Flip Ratio are recorded in each Run's
+   manifest and summary outputs.
 
 ``bfa_pbs.yaml``
    An Attack Scenario skeleton for BFA/PBS with a configurable selection batch

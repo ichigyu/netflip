@@ -180,6 +180,7 @@ def test_cli_run_soft_error_spec_writes_manifest_and_trace(
     assert "Resolved device: cpu" in result.output
     assert "== Soft Error ==" in result.output
     assert "  eligible_bits: 16" in result.output
+    assert "  requested_max_flip_count: 2" in result.output
     assert "  max_flip_count: 2" in result.output
     assert "  step 001/002: sampling uniform eligible bit" in result.output
     assert "  flip 001/002: layer=features tensor=features.weight" in result.output
@@ -189,6 +190,19 @@ def test_cli_run_soft_error_spec_writes_manifest_and_trace(
     assert manifest["run_id"] == "cli-soft-error"
     assert manifest["device"] == "cpu"
     assert manifest["rng_seeds"] == {"python": 7}
+    assert manifest["scenario_metadata"] == {
+        "scenario_type": "soft_error",
+        "rng_seed": 7,
+        "eligible_bit_population": 16,
+        "committed_flip_count": 2,
+        "committed_bit_flip_ratio": 2 / 16,
+        "stop_reason": "fault_budget",
+        "fault_model": "uniform-eligible-bit",
+        "fault_schedule": "one-bit-step",
+        "requested_max_flip_count": 2,
+        "requested_max_bit_flip_ratio": None,
+        "resolved_max_flip_count": 2,
+    }
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["clean_metrics"] == {"sum": 0}
     assert summary["flip_count"] == 2

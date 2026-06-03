@@ -22,6 +22,6 @@ scenario:
   fault_model: uniform-eligible-bit
   fault_schedule: one-bit-step
   fault_budget:
-    max_flip_count: 128
+    max_bit_flip_ratio: 0.001
   rng_seed: 2026
 output_dir: runs/cifar10-resnet20/random-soft-error
