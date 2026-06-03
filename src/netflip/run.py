@@ -378,9 +378,9 @@ def _bfa_candidate_scorer_for_artifact(
     for tensor_name, tensor in tensors.items():
         scale = getattr(tensor, "scale", None)
         if not isinstance(tensor_name, str) or isinstance(scale, bool):
-            return None
+            continue
         if not isinstance(scale, (int, float)):
-            return None
+            continue
         tensor_scales[tensor_name] = float(scale)
     if not tensor_scales:
         return None

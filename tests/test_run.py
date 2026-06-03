@@ -648,6 +648,48 @@ def test_dataloader_batch_size_uses_attack_selection_batch_size(tmp_path: Path) 
     assert run_module._dataloader_batch_size(soft_error_spec) == 128
 
 
+def test_bfa_candidate_scorer_skips_invalid_tensor_scales(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def build_scorer(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "scorer"
+
+    monkeypatch.setattr(
+        run_module,
+        "build_gradient_bfa_pbs_candidate_scorer",
+        build_scorer,
+    )
+    artifact = SimpleNamespace(
+        model=object(),
+        quantization=SimpleNamespace(
+            tensors={
+                "features.weight": SimpleNamespace(scale=0.25),
+                "bad-bool.weight": SimpleNamespace(scale=False),
+                "bad-string.weight": SimpleNamespace(scale="0.5"),
+                12: SimpleNamespace(scale=0.75),
+            }
+        ),
+    )
+    selection_batch = object()
+
+    scorer = run_module._bfa_candidate_scorer_for_artifact(
+        artifact,
+        selection_batch=selection_batch,
+        device="cpu",
+    )
+
+    assert scorer == "scorer"
+    assert captured == {
+        "model": artifact.model,
+        "selection_batch": selection_batch,
+        "tensor_scales": {"features.weight": 0.25},
+        "device": "cpu",
+    }
+
+
 def test_run_metadata_helpers_cover_optional_branches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

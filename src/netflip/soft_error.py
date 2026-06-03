@@ -185,7 +185,9 @@ class EligibleBitPopulation:
                 tensor_index,
                 eligible_tensor.tensor.shape,
             )
-            SignedInt8TwoComplementCodec().bit_metadata(bit_index)
+            if not 0 <= bit_index < INT8_BIT_WIDTH:
+                msg = f"bit_index must be in [0, {INT8_BIT_WIDTH}), got {bit_index}"
+                raise ValueError(msg)
             return (
                 eligible_tensor.start_bit_offset
                 + value_ordinal * INT8_BIT_WIDTH

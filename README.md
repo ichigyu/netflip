@@ -94,7 +94,7 @@ outputs live under git-ignored directories such as `data/`, `checkpoints/` and
 For CIFAR-10 PyTorch artifacts, BFA/PBS uses gradient-ranked Progressive Bit
 Search in the style of the upstream BFA implementation: each attack step runs a
 selection-batch backward pass, evaluates the best Conv/Linear candidate plan per
-layer, and commits the layer plan that maximizes cross entropy. The generic
+layer, and commits the layer plan that maximizes cross-entropy. The generic
 exact scorer remains available for small adapter-only tests and fallback cases.
 
 ## Test And Lint

@@ -134,7 +134,7 @@ After the dataset and prepared artifacts exist, run the Attack Scenario:
 
 For this benchmark path, each BFA/PBS step runs a selection-batch backward pass,
 evaluates the strongest Conv/Linear candidate plan per layer, and commits the
-plan whose forward pass maximizes cross entropy. If a one-bit plan does not
+plan whose forward pass maximizes cross-entropy. If a one-bit plan does not
 increase the objective, the PyTorch scorer progressively tries larger per-layer
 plans up to the remaining Flip Count budget.
 

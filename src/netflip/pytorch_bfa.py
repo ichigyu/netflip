@@ -174,7 +174,7 @@ def _candidate_weight_modules(
         if module is None or not isinstance(module, module_types):
             continue
         weight = getattr(module, "weight", None)
-        if weight is None or str(weight.dtype).rsplit(".", maxsplit=1)[-1] != "int8":
+        if weight is None or weight.dtype != torch.int8:
             continue
         candidates.append(
             _CandidateWeightModule(
