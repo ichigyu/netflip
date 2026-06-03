@@ -13,6 +13,11 @@ from typing import TypeAlias
 from netflip.int8_codec import INT8_BIT_WIDTH, SignedInt8TwoComplementCodec
 from netflip.manifest import JSONScalar
 from netflip.model_adapter import ModelAdapter, PerturbableTensor
+from netflip.progress import (
+    ProgressReporter,
+    format_progress_metrics,
+    report_progress,
+)
 from netflip.trace import PerturbationTraceEntry
 
 SOFT_ERROR_SCENARIO_TYPE = "soft_error"
@@ -204,13 +209,17 @@ def run_uniform_random_soft_error_baseline(
     rng_seed: int,
     failure_criterion: FailureCriterion | None = None,
     codec: SignedInt8TwoComplementCodec | None = None,
+    progress: ProgressReporter | None = None,
 ) -> SoftErrorRunResult:
     """Run a cumulative random soft-error baseline with one bit per step."""
     seed = _validate_int(rng_seed, "rng_seed")
     selected_codec = codec if codec is not None else SignedInt8TwoComplementCodec()
     population = EligibleBitPopulation.from_model_adapter(adapter)
     max_steps = fault_budget.max_steps(population.size)
+    report_progress(progress, f"  eligible_bits: {population.size}")
+    report_progress(progress, f"  max_flip_count: {max_steps}")
     if max_steps == 0:
+        report_progress(progress, f"  stopped: {FAULT_BUDGET_STOP_REASON}")
         return SoftErrorRunResult(
             perturbation_trace=(),
             stopped_because=FAULT_BUDGET_STOP_REASON,
@@ -225,6 +234,15 @@ def run_uniform_random_soft_error_baseline(
         metric_before = _evaluate_metric(metric_evaluator, adapter)
 
         for step_index in range(max_steps):
+            remaining_bits = population.size - step_index
+            report_progress(
+                progress,
+                (
+                    f"  step {step_index + 1:03d}/{max_steps:03d}: "
+                    f"sampling uniform eligible bit from {remaining_bits} "
+                    "uncommitted bits"
+                ),
+            )
             selection = population.selection_from_ordinal(
                 sampler.sample(rng),
                 codec=selected_codec,
@@ -266,7 +284,16 @@ def run_uniform_random_soft_error_baseline(
                 eligible_bit_population=population.size,
             )
             entries.append(entry)
+            report_progress(
+                progress,
+                _committed_flip_progress_message(
+                    entry=entry,
+                    total_steps=max_steps,
+                    metric_after=metric_after,
+                ),
+            )
             if failure_criterion is not None and failure_criterion(entry):
+                report_progress(progress, f"  stopped: {FAILURE_CRITERION_STOP_REASON}")
                 return SoftErrorRunResult(
                     perturbation_trace=tuple(entries),
                     stopped_because=FAILURE_CRITERION_STOP_REASON,
@@ -274,10 +301,28 @@ def run_uniform_random_soft_error_baseline(
                 )
             metric_before = metric_after
 
+    report_progress(progress, f"  stopped: {FAULT_BUDGET_STOP_REASON}")
     return SoftErrorRunResult(
         perturbation_trace=tuple(entries),
         stopped_because=FAULT_BUDGET_STOP_REASON,
         eligible_bit_population=population.size,
+    )
+
+
+def _committed_flip_progress_message(
+    *,
+    entry: PerturbationTraceEntry,
+    total_steps: int,
+    metric_after: dict[str, JSONScalar],
+) -> str:
+    layer = entry.layer_name if entry.layer_name is not None else entry.tensor_name
+    return (
+        f"  flip {entry.flip_count:03d}/{total_steps:03d}: "
+        f"layer={layer} "
+        f"tensor={entry.tensor_name} "
+        f"index={entry.tensor_index} "
+        f"bit={entry.bit_index} "
+        f"metrics={format_progress_metrics(metric_after)}"
     )
 
 

@@ -178,6 +178,13 @@ def test_cli_run_soft_error_spec_writes_manifest_and_trace(
     assert "Summary JSON:" in result.output
     assert "Summary CSV:" in result.output
     assert "Resolved device: cpu" in result.output
+    assert "== Soft Error ==" in result.output
+    assert "  eligible_bits: 16" in result.output
+    assert "  max_flip_count: 2" in result.output
+    assert "  step 001/002: sampling uniform eligible bit" in result.output
+    assert "  flip 001/002: layer=features tensor=features.weight" in result.output
+    assert "metrics=sum=" in result.output
+    assert "  stopped: fault_budget" in result.output
     manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_id"] == "cli-soft-error"
     assert manifest["device"] == "cpu"

@@ -170,6 +170,7 @@ def execute_experiment_run(
                 metric_evaluator=metric_evaluator,
                 fault_budget=fault_budget,
                 rng_seed=spec.scenario.rng_seed,
+                progress=progress,
             )
         else:
             report_progress(progress, "")

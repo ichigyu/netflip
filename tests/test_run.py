@@ -362,6 +362,54 @@ def test_execute_experiment_run_wraps_soft_error_run_errors(
         run_module.execute_experiment_run(spec_path)
 
 
+def test_execute_experiment_run_passes_progress_to_soft_error_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_soft_error_spec(tmp_path)
+    messages: list[str] = []
+
+    monkeypatch.setattr(run_module, "resolve_torch_device", lambda requested: "cpu")
+    monkeypatch.setattr(
+        run_module,
+        "_load_benchmark_artifact",
+        lambda spec: _fake_artifact(tmp_path),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "build_cifar10_dataloaders",
+        lambda **kwargs: SimpleNamespace(evaluation=["eval"]),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "evaluate_classification_metrics",
+        lambda model, dataloader, *, device: {"accuracy": 1.0},
+    )
+
+    def fake_soft_error_run(**kwargs: Any) -> SimpleNamespace:
+        kwargs["progress"]("  eligible_bits: 8")
+        kwargs["progress"]("  max_flip_count: 1")
+        return SimpleNamespace(
+            perturbation_trace=(),
+            flip_count=0,
+            stopped_because="fault_budget",
+            eligible_bit_population=8,
+        )
+
+    monkeypatch.setattr(
+        run_module,
+        "run_uniform_random_soft_error_baseline",
+        fake_soft_error_run,
+    )
+
+    output = run_module.execute_experiment_run(spec_path, progress=messages.append)
+
+    assert output.stopped_because == "fault_budget"
+    assert "== Soft Error ==" in messages
+    assert "  eligible_bits: 8" in messages
+    assert "  max_flip_count: 1" in messages
+
+
 def test_execute_experiment_run_wraps_metric_shape_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
